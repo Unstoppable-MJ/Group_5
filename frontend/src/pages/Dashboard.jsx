@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import API from "../services/api";
 import KPISection from "../components/KPISection";
 import AdvancedChart from "../components/AdvancedChart";
@@ -9,7 +9,9 @@ import StockPredictionChart from "../components/StockPredictionChart";
 import EditPortfolioModal from "../components/EditPortfolioModal";
 import { motion } from "framer-motion";
 
-export default function Dashboard({ activePortfolio }) {
+export default function Dashboard({ activePortfolio: propPortfolio, portfolios }) {
+  const { portfolioId } = useParams();
+  const activePortfolio = portfolioId || propPortfolio;
   const navigate = useNavigate();
   const [stocks, setStocks] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState(null);
@@ -144,7 +146,7 @@ export default function Dashboard({ activePortfolio }) {
 
         <div className="flex justify-center mt-2 pb-6">
           <button
-            onClick={() => navigate('/portfolio-details')}
+            onClick={() => navigate(`/portfolio/${activePortfolio}`)}
             className="bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-bold py-4 px-12 rounded-2xl shadow-[0_10px_20px_rgba(99,102,241,0.2)] hover:shadow-[0_15px_30px_rgba(99,102,241,0.4)] transition-all flex items-center gap-3 w-full justify-center group"
           >
             View Portfolio Details

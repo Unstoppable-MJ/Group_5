@@ -3,10 +3,12 @@ from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.authtoken.models import Token
 import yfinance as yf
 
 from .models import Stock, PortfolioStock
 from portfolio.models import Portfolio
+from users.models import UserProfile
 from .serializers import AddStockSerializer, StockListSerializer
 
 import numpy as np
@@ -54,8 +56,10 @@ class LoginAPIView(APIView):
         if user:
             # We will return the user ID to the frontend to pass in requests 
             # (In a real app, use JWT/Session, but for simplicity here we pass user_id)
+            token, _ = Token.objects.get_or_create(user=user)
             return Response({
                 "message": "Login successful",
+                "token": token.key,
                 "username": user.username,
                 "user_id": user.id
             })
@@ -75,6 +79,7 @@ class RegisterAPIView(APIView):
         password = request.data.get("password")
         email = request.data.get("email")
         first_name = request.data.get("first_name", "")
+        phone_number = request.data.get("phone_number")
 
         if not username or not password:
             return Response(
@@ -88,6 +93,12 @@ class RegisterAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if phone_number and UserProfile.objects.filter(phone_number=phone_number).exists():
+            return Response(
+                {"error": "Phone number already registered"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         user = User.objects.create_user(
             username=username,
             password=password,
@@ -95,8 +106,13 @@ class RegisterAPIView(APIView):
             first_name=first_name
         )
 
+        # Create UserProfile with phone number
+        UserProfile.objects.create(user=user, phone_number=phone_number)
+
+        token, _ = Token.objects.get_or_create(user=user)
         return Response({
             "message": "Account created successfully. Welcome to Finova.",
+            "token": token.key,
             "username": user.username,
             "user_id": user.id
         }, status=status.HTTP_201_CREATED)

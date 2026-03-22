@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-brksqa50+sz%7j6p$@oxvxt)z+s&w5iv36sw20%$w9nofr27c2
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework.authtoken',
     'users',
     'portfolio',
     'stocks',
@@ -128,3 +129,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 # AI Review Configuration (Gemini API)
 # IMPORTANT: Replace this with your actual Gemini API Key
 GEMINI_API_KEY ="AIzaSyCkWEU4H1AFFdvVboYgY3CoBidKvBx6JI0"
+
+# Telegram Bot Configuration
+# Get your token from @BotFather on Telegram
+TELEGRAM_BOT_TOKEN ="8693197401:AAE-c7V3-ASiwLUxFZJpScz0TodI6mhyx9Q" # REPLACE WITH YOUR ACTUAL BOT TOKEN

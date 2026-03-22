@@ -37,10 +37,11 @@ export default function Login() {
         password: pwd
       });
 
-      if (response.data.user_id) {
+      if (response.data.token) {
+        localStorage.setItem("token", response.data.token);
         localStorage.setItem("user_id", response.data.user_id);
         localStorage.setItem("username", response.data.username);
-        navigate("/dashboard");
+        navigate("/welcome");
       }
     } catch (err) {
       if (err.response && err.response.status === 401) {
@@ -161,13 +162,21 @@ export default function Login() {
             </AnimatePresence>
           </div>
 
-          <div className="text-center mt-4 border-t border-slate-800 pt-4">
+          <div className="text-center mt-4 border-t border-slate-800 pt-4 space-y-3">
             <p className="text-slate-400 text-sm">
               Don't have an account?{" "}
               <Link to="/register" className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
                 Create Account
               </Link>
             </p>
+            <div className="flex justify-between items-center text-xs">
+              <Link to="/forgot-password" title="Forgot Password" icon="lock" className="text-slate-500 hover:text-emerald-400 transition-colors">
+                Forgot password?
+              </Link>
+              <Link to="/login-otp" className="text-slate-500 hover:text-blue-400 transition-colors font-medium">
+                Login via OTP 📱
+              </Link>
+            </div>
           </div>
         </div>
 

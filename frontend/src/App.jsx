@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
+import LoginOTP from "./pages/LoginOTP";
+import ForgotPassword from "./pages/ForgotPassword";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import PortfolioDetails from "./pages/PortfolioDetails";
@@ -8,13 +10,31 @@ import PreciousMetalsPortfolio from "./pages/PreciousMetalsPortfolio";
 import CryptoPortfolio from "./pages/CryptoPortfolio";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
+import Welcome from "./pages/Welcome";
+import PortfolioSelect from "./pages/PortfolioSelect";
 import SentimentPortfolioSelect from "./pages/SentimentPortfolioSelect";
 import SentimentStockSelect from "./pages/SentimentStockSelect";
 import SentimentResult from "./pages/SentimentResult";
 import MainLayout from "./layouts/MainLayout";
 import { useState, useEffect } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import API from "./services/api";
+
+const PortfolioSync = ({ setActivePortfolio }) => {
+  const location = useLocation();
+
+  useEffect(() => {
+    const path = location.pathname;
+    if (path.startsWith("/dashboard/")) {
+      const id = path.split("/")[2];
+      if (id) {
+        setActivePortfolio(id);
+      }
+    }
+  }, [location, setActivePortfolio]);
+
+  return null;
+};
 
 const ProtectedRoute = ({ children }) => {
   const userId = localStorage.getItem("user_id");
@@ -56,15 +76,32 @@ function App() {
 
   return (
     <BrowserRouter>
+      <PortfolioSync setActivePortfolio={setActivePortfolio} />
       <Routes>
         <Route path="/" element={<Login />} />
+        <Route path="/login-otp" element={<LoginOTP />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/register" element={<Register />} />
         <Route
           path="/dashboard"
+          element={<Navigate to="/portfolios" replace />}
+        />
+        <Route
+          path="/dashboard/:portfolioId"
           element={
             <ProtectedRoute>
               <MainLayout portfolios={portfolios} activePortfolio={activePortfolio} setActivePortfolio={setActivePortfolio} refreshData={refreshData} fetchPortfolios={fetchPortfolios}>
-                <Dashboard portfolios={portfolios} activePortfolio={activePortfolio} refreshData={refreshData} />
+                <Dashboard portfolios={portfolios} refreshData={refreshData} />
+              </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/portfolios"
+          element={
+            <ProtectedRoute>
+              <MainLayout portfolios={portfolios} activePortfolio={activePortfolio} setActivePortfolio={setActivePortfolio} refreshData={refreshData} fetchPortfolios={fetchPortfolios}>
+                <PortfolioSelect portfolios={portfolios} />
               </MainLayout>
             </ProtectedRoute>
           }
@@ -150,6 +187,14 @@ function App() {
               >
                 <CryptoPortfolio />
               </MainLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/welcome"
+          element={
+            <ProtectedRoute>
+              <Welcome />
             </ProtectedRoute>
           }
         />

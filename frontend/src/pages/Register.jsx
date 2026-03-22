@@ -9,6 +9,7 @@ export default function Register() {
         fullName: "",
         email: "",
         username: "",
+        phoneNumber: "",
         password: "",
         confirmPassword: "",
     });
@@ -33,20 +34,22 @@ export default function Register() {
             setLoading(true);
             const response = await API.post("register/", {
                 username: formData.username,
+                phone_number: formData.phoneNumber,
                 password: formData.password,
                 email: formData.email,
                 first_name: formData.fullName,
             });
 
             if (response.status === 201) {
-                if (response.data.user_id) {
+                if (response.data.token) {
+                    localStorage.setItem("token", response.data.token);
                     localStorage.setItem("user_id", response.data.user_id);
                     localStorage.setItem("username", response.data.username);
                 }
 
                 setSuccess(true);
                 setTimeout(() => {
-                    navigate("/dashboard");
+                    navigate("/welcome");
                 }, 2000);
             }
         } catch (err) {
@@ -125,6 +128,18 @@ export default function Register() {
                             name="username"
                             placeholder="Username"
                             value={formData.username}
+                            onChange={handleChange}
+                            required
+                            className="w-full p-4 rounded-xl bg-slate-950/50 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all duration-300"
+                        />
+                    </div>
+
+                    <div>
+                        <input
+                            type="tel"
+                            name="phoneNumber"
+                            placeholder="Phone Number (e.g. +91...)"
+                            value={formData.phoneNumber}
                             onChange={handleChange}
                             required
                             className="w-full p-4 rounded-xl bg-slate-950/50 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all duration-300"

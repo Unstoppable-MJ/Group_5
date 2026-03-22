@@ -127,4 +127,4 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # AI Review Configuration (Gemini API)
 # IMPORTANT: Replace this with your actual Gemini API Key
-GEMINI_API_KEY ="AIzaSyDIuU1v-mdPvM3LPymEbtng4nwA1MVP5bY"
+GEMINI_API_KEY ="AIzaSyCkWEU4H1AFFdvVboYgY3CoBidKvBx6JI0"

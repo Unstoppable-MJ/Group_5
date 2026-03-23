@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from .services import get_chatbot_response
+from .models import ChatMessage
+from django.contrib.auth.models import User
 
 import traceback
 import logging
@@ -33,6 +35,22 @@ class ChatbotView(APIView):
 
         try:
             bot_response = get_chatbot_response(user_input, history, user_id, is_recommendation)
+            
+            # Save the message to the database
+            user_obj = None
+            if user_id:
+                try:
+                    user_obj = User.objects.get(id=user_id)
+                except User.DoesNotExist:
+                    pass
+            
+            ChatMessage.objects.create(
+                user=user_obj,
+                user_message=user_input,
+                bot_response=bot_response,
+                is_recommendation=is_recommendation
+            )
+            
             return Response({'response': bot_response}, status=status.HTTP_200_OK)
         except Exception as e:
             logger.error(f"Chatbot Error: {str(e)}")

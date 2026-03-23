@@ -1,6 +1,6 @@
-# Finova - Intelligent Stock Analysis & Prediction Platform
+# ChatSense - Intelligent Stock Analysis & Prediction Platform
 
-Finova is a comprehensive, AI-driven stock portfolio management and analysis platform. It combines a robust Django backend with a sleek React frontend to deliver advanced financial insights, predictive modeling, and machine learning explainability.
+ChatSense is a comprehensive, AI-driven stock portfolio management and analysis platform. It combines a robust Django backend with a sleek React frontend to deliver advanced financial insights, predictive modeling, and machine learning explainability.
 
 ## 🔄 System Architecture & Workflow
 

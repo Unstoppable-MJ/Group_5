@@ -174,9 +174,9 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
           </div>
           <div className="hidden sm:flex flex-col justify-center">
             <h1 className="text-xl font-bold leading-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-300">
-              Finova
+              ChatSense
             </h1>
-            <motion.span
+            {/* <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 0.55 }}
               whileHover={{ opacity: 0.85 }}
@@ -184,7 +184,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
               className="text-[11px] italic font-medium tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400 cursor-default"
             >
               Powered by @Unstoppable-Mukteshwar
-            </motion.span>
+            </motion.span> */}
           </div>
         </div>
 

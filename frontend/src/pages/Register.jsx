@@ -78,7 +78,7 @@ export default function Register() {
                     <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
                         Create Account
                     </h2>
-                    <p className="text-slate-400 mt-2 text-sm text-center">Join Finova and start managing your portfolio</p>
+                    <p className="text-slate-400 mt-2 text-sm text-center">Join ChatSense and start managing your portfolio</p>
                 </div>
 
                 {error && (
@@ -93,7 +93,7 @@ export default function Register() {
                         animate={{ opacity: 1, y: 0 }}
                         className="mb-4 p-4 bg-emerald-500/10 border border-emerald-500/50 rounded-xl text-emerald-400 text-sm text-center font-medium"
                     >
-                        Account created successfully. Welcome to Finova. Redirecting...
+                        Account created successfully. Welcome to ChatSense. Redirecting...
                     </motion.div>
                 )}
 

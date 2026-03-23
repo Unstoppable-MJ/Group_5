@@ -41,7 +41,7 @@ class TelegramWebhookView(APIView):
                     "one_time_keyboard": True,
                     "resize_keyboard": True
                 }
-                TelegramService.send_message(chat_id, "Welcome to Finova OTP System! Please click the button below to link your phone number.", reply_markup=reply_markup)
+                TelegramService.send_message(chat_id, "Welcome to ChatSense OTP System! Please click the button below to link your phone number.", reply_markup=reply_markup)
                 
             elif 'contact' in message:
                 contact = message['contact']
@@ -53,7 +53,7 @@ class TelegramWebhookView(APIView):
                     profile.save()
                     TelegramService.send_message(chat_id, f"Successfully linked! You can now receive OTPs for login and password reset.")
                 except UserProfile.DoesNotExist:
-                    TelegramService.send_message(chat_id, "Sorry, we couldn't find an account with this phone number. Please register on the Finova website first.")
+                    TelegramService.send_message(chat_id, "Sorry, we couldn't find an account with this phone number. Please register on the ChatSense website first.")
             
             elif len(text) == 6 and text.isdigit():
                 # Check if it's a linking code

@@ -111,7 +111,7 @@ class RegisterAPIView(APIView):
 
         token, _ = Token.objects.get_or_create(user=user)
         return Response({
-            "message": "Account created successfully. Welcome to Finova.",
+            "message": "Account created successfully. Welcome to ChatSense.",
             "token": token.key,
             "username": user.username,
             "user_id": user.id

@@ -166,7 +166,7 @@ export default function Welcome() {
                 transition={{ delay: 2 }}
                 className="absolute bottom-10 text-slate-600 text-xs tracking-widest uppercase font-semibold"
             >
-                &copy; 2026 Finova Intelligence. All rights reserved.
+                &copy; 2026 ChatSense Intelligence. All rights reserved.
             </motion.div>
         </div>
     );

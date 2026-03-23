@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'users',
     'portfolio',
     'stocks',
+    'chatbot',
     "corsheaders"
 ]
 
@@ -133,3 +134,7 @@ GEMINI_API_KEY ="AIzaSyCkWEU4H1AFFdvVboYgY3CoBidKvBx6JI0"
 # Telegram Bot Configuration
 # Get your token from @BotFather on Telegram
 TELEGRAM_BOT_TOKEN ="8693197401:AAE-c7V3-ASiwLUxFZJpScz0TodI6mhyx9Q" # REPLACE WITH YOUR ACTUAL BOT TOKEN
+
+# Default primary key field type
+# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

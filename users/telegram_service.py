@@ -26,5 +26,5 @@ class TelegramService:
 
     @classmethod
     def send_otp(cls, chat_id, otp):
-        text = f"<b>Finova OTP</b>\n\nYour One-Time Password is: <code>{otp}</code>\n\nValid for 5 minutes. Do not share this with anyone."
+        text = f"<b>ChatSense OTP</b>\n\nYour One-Time Password is: <code>{otp}</code>\n\nValid for 5 minutes. Do not share this with anyone."
         return cls.send_message(chat_id, text)

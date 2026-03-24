@@ -1,9 +1,9 @@
 import { motion } from "framer-motion";
 
 export default function KPISection({ stocks }) {
-  const validPEStocks = stocks.filter(s => s.pe_ratio != null && s.pe_ratio > 0);
+  const validPEStocks = stocks.filter(s => s.pe_ratio != null && parseFloat(s.pe_ratio) > 0);
   const avgPE = validPEStocks.length
-    ? validPEStocks.reduce((acc, s) => acc + s.pe_ratio, 0) / validPEStocks.length
+    ? validPEStocks.reduce((acc, s) => acc + parseFloat(s.pe_ratio), 0) / validPEStocks.length
     : null;
 
 

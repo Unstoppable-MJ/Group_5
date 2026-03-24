@@ -10,34 +10,6 @@ import time
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
-# Set up a session with a user-agent to avoid "Invalid Crumb" issues
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-})
-
-def get_yf_session():
-    """
-    Creates a robust requests session for yfinance to bypass common 429/401 blocks.
-    """
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-    })
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[401, 429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-YF_SESSION = get_yf_session()
-
 # Silence yfinance logger to prevent terminal clutter
 import logging
 yf_logger = logging.getLogger('yfinance')
@@ -46,27 +18,35 @@ yf_logger.setLevel(logging.CRITICAL)
 def get_safe_pe_ratio(symbol, t=None):
     """
     Carefully fetch PE ratio with 24h caching.
-    Uses fast_info to avoid the expensive and unstable ticker.info.
+    Uses fast_info first, then falls back to info for completeness.
     """
-    cache_key = f"pe_v2_{symbol}"
+    cache_key = f"pe_v3_{symbol}"
     cached_pe = cache.get(cache_key)
     if cached_pe is not None:
         return cached_pe if cached_pe != -1 else None
 
     try:
         if t is None:
-            t = yf.Ticker(symbol, session=YF_SESSION)
+            t = yf.Ticker(symbol)
         
-        # fast_info is generally safer than .info
+        # 1. Check fast_info first (faster, less prone to blocking)
         pe = t.fast_info.get('trailing_pe', t.fast_info.get('forward_pe'))
-        if pe:
-            cache.set(cache_key, float(pe), 86400)
-            return float(pe)
+        
+        # 2. Fallback to info if fast_info fails (more comprehensive but slower)
+        if pe is None:
+            info = t.info
+            pe = info.get('trailingPE', info.get('forwardPE'))
+        
+        if pe is not None:
+            val = float(pe)
+            cache.set(cache_key, val, 86400) # Cache for 24h
+            return val
         else:
-            # Cache failure as -1 to avoid repeated hits
+            # Cache failure for 1h to avoid repeated hits
             cache.set(cache_key, -1, 3600)
             return None
-    except:
+    except Exception as e:
+        print(f"Error fetching PE for {symbol}: {e}")
         return None
 
 def get_batch_stock_data(symbols, period="1y", use_cache=True):
@@ -79,7 +59,7 @@ def get_batch_stock_data(symbols, period="1y", use_cache=True):
 
     # Caching key for the entire batch request (5-10 mins)
     batch_slug = "_".join(sorted(symbols[:5])) + f"_{len(symbols)}"
-    cache_key = f"batch_fetch_{batch_slug}"
+    cache_key = f"batch_fetch_{batch_slug}_{period}"
     if use_cache:
         cached = cache.get(cache_key)
         if cached: return cached
@@ -99,7 +79,6 @@ def get_batch_stock_data(symbols, period="1y", use_cache=True):
                 chunk, 
                 period=period, 
                 group_by='ticker', 
-                session=YF_SESSION, 
                 threads=False, 
                 progress=False
             )
@@ -160,7 +139,7 @@ from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import traceback
-import google.generativeai as genai
+import google.genai as genai
 from django.conf import settings
 from django.core.cache import cache
 import os
@@ -260,7 +239,6 @@ def update_stock_db_batch():
                 chunk, 
                 period="1y", 
                 group_by='ticker', 
-                session=YF_SESSION, 
                 threads=False, 
                 progress=False
             )
@@ -276,13 +254,21 @@ def update_stock_db_batch():
                     
                     if ticker_df is not None and not ticker_df.empty:
                         price = float(ticker_df['Close'].iloc[-1])
-                        # Use get_safe_pe_ratio which already handles caching
+                        
+                        # Fetch PE with new v3 logic (fast_info + info fallback)
                         pe = get_safe_pe_ratio(symbol)
                         
-                        StockData.objects.filter(symbol=symbol).update(
-                            current_price=price,
-                            pe_ratio=pe,
-                            max_price_52w=float(ticker_df['High'].max())
+                        # Use current date as the last sync
+                        last_sync = timezone.now()
+
+                        StockData.objects.update_or_create(
+                            symbol=symbol,
+                            defaults={
+                                "current_price": price,
+                                "pe_ratio": pe,
+                                "max_price_52w": float(ticker_df['High'].max()),
+                                "last_sync": last_sync
+                            }
                         )
                         total_updated += 1
                 except: continue
@@ -292,28 +278,6 @@ def update_stock_db_batch():
             print(f"❌ Batch sync failed for chunk: {e}")
 
     print(f"✅ Background Sync Completed: {total_updated}/{len(symbols)} updated.")
-
-def get_safe_pe_ratio(symbol, t=None):
-    """
-    Carefully fetch PE ratio with 24h caching.
-    Uses ticker.info with robust session.
-    """
-    cache_key = f"pe_ratio_{symbol}"
-    cached_pe = cache.get(cache_key)
-    if cached_pe is not None:
-        return cached_pe
-
-    try:
-        if t is None:
-            t = yf.Ticker(symbol, session=YF_SESSION)
-        
-        info = t.info
-        pe_ratio = info.get('trailingPE', info.get('forwardPE'))
-        if pe_ratio:
-            cache.set(cache_key, float(pe_ratio), 86400) # cache for 24h
-        return pe_ratio
-    except:
-        return None
 
 
 def sync_builtin_portfolio(portfolio_id):
@@ -550,47 +514,23 @@ class PortfolioListAPIView(APIView):
             return Response({"error": "user_id is required to fetch portfolios"}, status=status.HTTP_400_BAD_REQUEST)
 
         from django.db.models import Q
-        # Fetch existing portfolios from DB (user's or built-in)
-        db_portfolios = Portfolio.objects.filter(Q(user_id=user_id) | Q(portfolio_type='ai_builtin'))
-        
-        # Predefined AI Portfolios (Ensure they always show up)
-        ai_portfolios_static = [
-            {
-                "id": "india200",
-                "name": "India Nifty 200 AI",
-                "type": "ai_builtin",
-                "description": "Large-scale AI portfolio covering top 200 Indian stocks with full analytics.",
-                "stock_count": 200
-            },
-            {
-                "id": "usa200",
-                "name": "USA Top 200 AI",
-                "type": "ai_builtin",
-                "description": "Large-scale AI portfolio covering top 200 USA stocks with full analytics.",
-                "stock_count": 200
-            },
-            {
-                "id": "nifty50_builtin",
-                "name": "NIFTY 50 AI Portfolio",
-                "type": "ai_builtin",
-                "description": "AI-driven NIFTY 50 portfolio with advanced PCA and forecasting.",
-                "stock_count": 50
-            },
-            {
-                "id": "metals_builtin",
-                "name": "Precious Metals AI",
-                "type": "ai_builtin",
-                "description": "Gold and Silver AI strategy for long-term wealth preservation.",
-                "stock_count": 2
-            },
-            {
-                "id": "crypto_builtin",
-                "name": "Crypto AI Portfolio",
-                "type": "ai_builtin",
-                "description": "AI-powered crypto investment strategy and live tracking.",
-                "stock_count": 10
-            }
+        # Fetch existing portfolios from DB (user's or custom AI)
+        # Exclude the hardcoded ones we want to remove
+        excluded_names = [
+            "India Nifty 200 AI", 
+            "USA Top 200 AI", 
+            "NIFTY 50 AI Portfolio", 
+            "Precious Metals AI", 
+            "Crypto AI Portfolio"
         ]
+        db_portfolios = Portfolio.objects.filter(
+            Q(user_id=user_id) | 
+            (Q(portfolio_type='ai_builtin') & ~Q(name__in=excluded_names)) | 
+            Q(portfolio_type='ai_custom')
+        )
+        
+        # Predefined AI Portfolios (Removed as requested)
+        ai_portfolios_static = []
 
         data = []
         seen_names = set()
@@ -703,7 +643,7 @@ class AddStockAPIView(APIView):
                         {"error": "Invalid stock symbol or price unavailable"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
-                ticker = yf.Ticker(yahoo_symbol, session=session)
+                ticker = yf.Ticker(yahoo_symbol)
                 data = ticker.info
 
                 current_price = float(hist_1y['Close'].iloc[-1])
@@ -791,6 +731,15 @@ class StockListAPIView(APIView):
             stocks_data = get_builtin_portfolio_stocks(portfolio_id)
             return Response(stocks_data)
 
+        # Handle sector portfolios (they are also ai_builtin but named differently)
+        try:
+            p_obj = Portfolio.objects.get(id=portfolio_id)
+            if p_obj.portfolio_type == 'ai_builtin' and p_obj.name.endswith(" Portfolio"):
+                stocks_data = get_sector_portfolio_stocks(portfolio_id)
+                return Response(stocks_data)
+        except:
+            pass
+
         if portfolio_id and portfolio_id != "all":
             stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id)
         else:
@@ -830,7 +779,6 @@ class StockPreviewAPIView(APIView):
             ticker = yf.Ticker(yahoo_symbol)
             # Use history instead of ticker.info
             hist_1y = ticker.history(period="1y")
-            ticker = yf.Ticker(yahoo_symbol, session=session)
             data = ticker.info
 
             current_price = data.get("currentPrice") or data.get("regularMarketPrice") or data.get("previousClose")
@@ -1040,7 +988,7 @@ class PortfolioGrowthAPIView(APIView):
             batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
             # Download 1 month of historical close prices for all unique symbols
             import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
+            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
 
             day_map = {}
             dates_ordered = []
@@ -1109,8 +1057,20 @@ class MultiStockHistoryAPIView(APIView):
             symbol_tuples = get_builtin_symbols(portfolio_id)
             symbols = [s[0] for s in symbol_tuples]
         else:
-            stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
-            symbols = [s.stock.symbol for s in stocks]
+            try:
+                p_obj = Portfolio.objects.get(id=portfolio_id)
+                if p_obj.portfolio_type == 'ai_builtin' and p_obj.name.endswith(" Portfolio"):
+                    # For sector portfolios, get symbols from the Stock model
+                    sector_name = p_obj.name.replace(" Portfolio", "")
+                    symbols = list(Stock.objects.filter(sector__iexact=sector_name).values_list('symbol', flat=True))
+                else:
+                    stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                    symbols = [s.stock.symbol for s in stocks]
+            except Portfolio.DoesNotExist:
+                return Response({"error": "Portfolio not found"}, status=404)
+            except Exception:
+                stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                symbols = [s.stock.symbol for s in stocks]
 
         if not symbols:
             return Response({})
@@ -1118,23 +1078,33 @@ class MultiStockHistoryAPIView(APIView):
         try:
             # Safely fetch multiple symbols using chunked batching
             batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
-            # Download multiple symbols at once
-            import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
             
             result = {}
-            for symbol, metric_data in batch_data.items():
+            for symbol in symbols:
                 symbol_data = []
-                try:
+                metric_data = batch_data.get(symbol)
+                
+                ticker_df = None
+                if metric_data and metric_data.get("history") is not None:
                     ticker_df = metric_data.get("history")
-                    if ticker_df is not None and not ticker_df.empty:
+                else:
+                    # Fallback: Individual fetch if batch missed it
+                    try:
+                        print(f"History fallback for {symbol}")
+                        ticker_df = yf.Ticker(symbol).history(period="1mo")
+                    except Exception:
+                        pass
+
+                if ticker_df is not None and not ticker_df.empty:
+                    try:
                         for date, row in ticker_df.iterrows():
                             symbol_data.append({
                                 "date": date.strftime("%Y-%m-%d"),
-                                "close": round(row['Close'], 2)
+                                "close": round(float(row['Close']), 2)
                             })
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
+                
                 if symbol_data:
                     result[symbol] = symbol_data
 
@@ -1206,16 +1176,17 @@ class StockPredictionAPIView(APIView):
         history_period = "2y" if model_type == "deep_learning" else "1y"
 
         try:
+            # More robust data fetching with a fallback
             batch_data = get_batch_stock_data([yahoo_symbol], period=history_period, use_cache=True)
-            if not batch_data or yahoo_symbol not in batch_data:
-                return Response({"error": "No historical data found"}, status=404)
-                
-            df = batch_data[yahoo_symbol].get("history")
+            df = batch_data.get(yahoo_symbol, {}).get("history")
+
             if df is None or df.empty:
-            ticker = yf.Ticker(yahoo_symbol, session=session)
-            df = ticker.history(period=history_period)
+                print(f"Cache miss or empty history for {yahoo_symbol}, trying direct fetch...")
+                ticker = yf.Ticker(yahoo_symbol)
+                df = ticker.history(period=history_period)
+            
             if df.empty:
-                return Response({"error": "No historical data found"}, status=404)
+                return Response({"error": "No historical data found after fallback"}, status=404)
 
             df = df.reset_index()
             # Basic Feature Engineering
@@ -1450,22 +1421,56 @@ class StockClusteringAPIView(APIView):
                 return Response({"error": "No data found for this built-in portfolio."}, status=400)
             df = pd.DataFrame(stocks_data)
         else:
-            stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id)
-            if stocks.count() == 0:
-                return Response({"error": "No stocks exist in this portfolio to perform clustering."}, status=400)
+            try:
+                portfolio = Portfolio.objects.get(id=portfolio_id)
+            except Portfolio.DoesNotExist:
+                return Response({"error": "Portfolio not found"}, status=404)
+
+            # Check if this is a sector portfolio (identified by name)
+            is_sector = portfolio.name.endswith(" Portfolio")
             
-            # Build list including ALL duplicates
-            data = []
-            for s in stocks:
-                data.append({
-                    "id": s.id,
-                    "symbol": str(s.stock.symbol).replace(".NS", ""),
-                    "current_price": float(s.current_price),
-                    "pe_ratio": float(s.pe_ratio or 15.0),
-                    "discount_level": float(s.discount_level),
-                    "opportunity": float(s.opportunity)
-                })
-            df = pd.DataFrame(data)
+            if is_sector:
+                # Use the high-performance sector fetch logic
+                sector_stocks = get_sector_portfolio_stocks(portfolio_id)
+                if not sector_stocks:
+                    return Response({"error": "No stocks found for this sector portfolio."}, status=400)
+                df = pd.DataFrame(sector_stocks)
+            else:
+                # Custom user portfolio: sync with latest StockData
+                stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                if stocks.count() == 0:
+                    return Response({"error": "No stocks exist in this portfolio to perform clustering."}, status=400)
+                
+                # Fetch symbols and their StockData in one batch
+                symbols = [s.stock.symbol for s in stocks]
+                stock_data_map = {sd.symbol: sd for sd in StockData.objects.filter(symbol__in=symbols)}
+
+                data = []
+                for s in stocks:
+                    sd = stock_data_map.get(s.stock.symbol)
+                    
+                    # Fetch latest PE if missing
+                    curr_pe = sd.pe_ratio if sd else s.pe_ratio
+                    if curr_pe is None:
+                        curr_pe = get_safe_pe_ratio(s.stock.symbol)
+                        if curr_pe and sd:
+                            sd.pe_ratio = curr_pe
+                            sd.save()
+
+                    curr_price = float(sd.current_price) if sd else float(s.current_price or 0.0)
+                    max_price = float(sd.max_price_52w) if sd else float(s.max_price or 0.0)
+                    
+                    disc, opp = calculate_stock_metrics(curr_price, max_price, curr_pe)
+
+                    data.append({
+                        "id": s.id,
+                        "symbol": str(s.stock.symbol).replace(".NS", ""),
+                        "current_price": curr_price,
+                        "pe_ratio": float(curr_pe or 15.0),
+                        "discount_level": disc,
+                        "opportunity": opp
+                    })
+                df = pd.DataFrame(data)
 
         from sklearn.preprocessing import StandardScaler
         from sklearn.cluster import KMeans
@@ -1765,30 +1770,32 @@ class PreciousMetalsAPIView(APIView):
                 "SAND", "OR", "SSRM", "CGAU", "EQX", "OSK", "GFI", "AU", "HMY", "DRD"
             ]
 
+            # Separate pure commodities from mining stocks
+            pure_commodities = ["GLD", "SLV", "IAU", "SGOL", "SIVR", "PPLT", "PALL"]
+            mining_stocks = [t for t in precious_metals_tickers if t not in pure_commodities]
+
             ticker_info_list = []
             portfolio_prices = {}
             target_returns = []
 
-            for symbol in precious_metals_tickers:
+            # --- Process Mining Stocks (which have PE, etc.) ---
+            for symbol in mining_stocks:
                 db_data = StockData.objects.filter(symbol=symbol).first()
                 try:
-                    # History is still needed for precious metals ROI/Momentum
                     data = get_batch_stock_data([symbol], use_cache=True).get(symbol)
                     if not data or data['history'] is None or data['history'].empty:
                         continue
                     
                     closes = data['history']['Close'].dropna()
-                    if len(closes) < 130:
-                        continue
-                    
+                    if len(closes) < 130: continue
+
                     portfolio_prices[symbol] = closes
                     annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
                     momentum_6m = (closes.iloc[-1] / closes.iloc[-126]) - 1
-                    daily_returns = closes.pct_change().dropna()
-                    volatility = daily_returns.std() * np.sqrt(252)
+                    volatility = closes.pct_change().dropna().std() * np.sqrt(252)
 
                     curr_price = db_data.current_price if db_data else float(closes.iloc[-1])
-                    pe_ratio = db_data.pe_ratio if db_data else 15.0
+                    pe_ratio = get_safe_pe_ratio(symbol) # Use safe fetcher
                     max_price = db_data.max_price_52w if db_data else float(curr_price)
                     
                     discount_level, opportunity_score = calculate_stock_metrics(curr_price, max_price, pe_ratio)
@@ -1797,13 +1804,40 @@ class PreciousMetalsAPIView(APIView):
                     ticker_info_list.append({
                         "symbol": symbol, "company_name": db_data.company_name if db_data else symbol,
                         "returns": float(annual_return), "volatility": float(volatility),
-                        "momentum": float(momentum_6m), "pe_ratio": float(pe_ratio),
+                        "momentum": float(momentum_6m), "pe_ratio": float(pe_ratio or 0.0),
                         "discount_level": float(discount_level), "opportunity": float(opportunity_score),
                         "current_price": float(curr_price)
                     })
                     target_returns.append(target)
                 except Exception as e:
-                    print(f"Error processing metal {symbol}: {e}")
+                    print(f"Error processing mining stock {symbol}: {e}")
+
+            # --- Process Pure Commodities (simpler metrics) ---
+            for symbol in pure_commodities:
+                try:
+                    data = get_batch_stock_data([symbol], use_cache=True).get(symbol)
+                    if not data or data['history'] is None or data['history'].empty:
+                        continue
+                    
+                    closes = data['history']['Close'].dropna()
+                    if len(closes) < 130: continue
+
+                    portfolio_prices[symbol] = closes
+                    annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
+                    momentum_6m = (closes.iloc[-1] / closes.iloc[-126]) - 1
+                    volatility = closes.pct_change().dropna().std() * np.sqrt(252)
+                    target = (closes.iloc[-1] / closes.iloc[-21]) - 1
+
+                    ticker_info_list.append({
+                        "symbol": symbol, "company_name": f"{symbol} (Commodity)",
+                        "returns": float(annual_return), "volatility": float(volatility),
+                        "momentum": float(momentum_6m), "pe_ratio": 0.0, # N/A for commodities
+                        "discount_level": 0.0, "opportunity": 0.0, # N/A for commodities
+                        "current_price": float(closes.iloc[-1])
+                    })
+                    target_returns.append(target)
+                except Exception as e:
+                    print(f"Error processing commodity {symbol}: {e}")
             
             # Use ticker_info_list as compiled_data
             compiled_data = ticker_info_list
@@ -2241,6 +2275,11 @@ class ModelBacktestAPIView(APIView):
         }
         ticker = asset_map.get(raw_ticker, raw_ticker)
         
+        # 1. Resolve to Yahoo symbol (add .NS if missing)
+        # Check if this is a stock vs crypto/metal from asset_map
+        if ticker == raw_ticker and "." not in ticker:
+            ticker = ticker + ".NS"
+
         # Check cache first
         cache_key = f"backtest_{ticker}_{datetime.now().strftime('%Y-%m-%d')}"
         if cache_key in BACKTEST_CACHE:
@@ -2256,13 +2295,21 @@ class ModelBacktestAPIView(APIView):
                 StockData.objects.get_or_create(symbol=ticker)
                 db_data = StockData.objects.filter(symbol=ticker).first()
 
-            batch_results = get_batch_stock_data([ticker], use_cache=True)
+            # Request 2y to align with UI description
+            batch_results = get_batch_stock_data([ticker], period="2y", use_cache=True)
             data = batch_results.get(ticker)
             
-            if not data or data['history'] is None or data['history'].empty:
+            df = data.get('history') if data else None
+            
+            # Fallback if cache/batch fails
+            if df is None or df.empty:
+                print(f"Backtest cache miss for {ticker}, trying direct fetch...")
+                df = yf.Ticker(ticker).history(period="2y")
+            
+            if df is None or df.empty:
                 return Response({"ticker": ticker, "results": []}, status=200)
             
-            closes = data['history']['Close'].dropna()
+            closes = df['Close'].dropna()
             if isinstance(closes, pd.DataFrame):
                 closes = closes.iloc[:, 0]
 
@@ -2406,52 +2453,101 @@ class SentimentAPIView(APIView):
         
         # Prepare yahoo symbol
         yahoo_symbol = symbol.upper() if symbol.upper().endswith(".NS") else symbol.upper() + ".NS"
+        base_symbol = symbol.upper().replace(".NS", "")
         
         try:
             # Prepare queries
             all_news = []
             
-            # 1. Ticker News
+            # 1. Fetch Company Name from DB
+            stock_obj = Stock.objects.filter(symbol=symbol).first()
+            company_name = stock_obj.name if stock_obj else base_symbol
+            
+            # Clean company name for better keyword matching (e.g., "HCL Technologies Ltd" -> ["hcl", "technologies"])
+            clean_name = company_name.replace("Ltd.", "").replace("Limited", "").replace("Corporation", "").strip()
+            name_keywords = [w.lower() for w in clean_name.split() if len(w) > 2]
+            
+            # 1. Ticker News (Yahoo Finance's built-in news for the ticker)
             ticker = yf.Ticker(yahoo_symbol)
             all_news.extend(getattr(ticker, 'news', []))
             
-            # 2. Search by Symbol
+            # 2. Search by Specific Query
             try:
-                search_sym = yf.Search(yahoo_symbol)
-                all_news.extend(search_sym.news)
+                # Try a broader search for Indian stocks
+                search_query = f"{company_name} share price news"
+                search_results = yf.Search(search_query)
+                all_news.extend(search_results.news)
             except: pass
             
-            # 3. Search by Company Name
+            # 3. Search by Symbol and News
             try:
-                stock_obj = Stock.objects.filter(symbol=symbol).first()
-                if stock_obj:
-                    search_name = yf.Search(f"{stock_obj.name} stock news India")
-                    all_news.extend(search_name.news)
+                search_query_2 = f"{base_symbol} news India"
+                search_results_2 = yf.Search(search_query_2)
+                all_news.extend(search_results_2.news)
             except: pass
 
-            # De-duplicate and Validate
+            # 4. Fallback search if still empty
+            if not all_news:
+                try:
+                    search_query_3 = f"{company_name} news"
+                    search_results_3 = yf.Search(search_query_3)
+                    all_news.extend(search_results_3.news)
+                except: pass
+
+            # --- Strict De-duplication and Relevance Filtering ---
             seen_titles = set()
             valid_news = []
+            
+            # Key core words for filtering (ignore generic words)
+            ignore_words = {"ltd", "limited", "corp", "corporation", "india", "stock", "share", "price"}
+            core_keywords = [kw for kw in name_keywords if kw not in ignore_words]
+            if not core_keywords: core_keywords = [base_symbol.lower()]
+
             for n in all_news:
                 title = n.get('title') or n.get('text') or n.get('headline')
-                if title and title not in seen_titles:
+                if not title: continue
+                
+                title_lower = title.lower()
+                
+                # Relevance: Title must contain base symbol OR any core keyword
+                is_relevant = (base_symbol.lower() in title_lower) or \
+                              any(kw in title_lower for kw in core_keywords)
+                
+                if is_relevant and title not in seen_titles:
                     seen_titles.add(title)
                     valid_news.append(n)
+
+            # If still no valid news after relevance filter, take whatever we found from ticker news as absolute fallback
+            if not valid_news:
+                ticker_news = getattr(ticker, 'news', [])
+                if ticker_news:
+                    for n in ticker_news:
+                        title = n.get('title')
+                        if title and title not in seen_titles:
+                            valid_news.append(n)
+                            seen_titles.add(title)
+                
+                # If STILL nothing, take the first 3 items from all_news regardless of filter (better than empty)
+                if not valid_news and all_news:
+                    for n in all_news[:3]:
+                        title = n.get('title')
+                        if title and title not in seen_titles:
+                            valid_news.append(n)
+                            seen_titles.add(title)
 
             analyzer = SentimentIntensityAnalyzer()
             
             # --- Sentiment Calculation ---
             all_sentiments = []
-            print(f"\n--- Sentiment Debug: {symbol} ---")
-            
             final_headlines = []
-            for item in valid_news[:10]: # Changed from `news` to `valid_news`
+            
+            # Process up to 10 most relevant news
+            for item in valid_news[:10]:
                 title = item.get('title') or item.get('text') or item.get('headline')
                 if title:
                     score = analyzer.polarity_scores(title)['compound']
                     all_sentiments.append(score)
                     final_headlines.append(title)
-                    print(f"[{round(score, 2)}] {title}")
 
             if not all_sentiments:
                  return Response({
@@ -2587,9 +2683,8 @@ class AIReviewView(APIView):
 # -----------------------------
 def sync_sector_portfolios():
     """
-    Automatically creates sector-based portfolios relying on the 'sector' column of the Stock model.
+    Returns the list of sector-based portfolios. Creates the Portfolio object if it doesn't exist.
     """
-    # Exclude invalid or missing sectors
     sectors = Stock.objects.exclude(sector__in=[None, "", "nan", "Unknown", "Various"]).values_list('sector', flat=True).distinct()
     
     sector_data = []
@@ -2597,40 +2692,19 @@ def sync_sector_portfolios():
     for sector in sectors:
         clean_sector = str(sector).title()
         portfolio_name = f"{clean_sector} Portfolio"
-        portfolio_slug = f"sector_{sector.lower().replace(' ', '_').replace('/', '_')}"
 
         portfolio, created = Portfolio.objects.get_or_create(
             name=portfolio_name,
             defaults={"description": f"Auto-generated portfolio for {clean_sector} sector.", "portfolio_type": "ai_builtin"}
         )
         
-        expected_count = Stock.objects.filter(sector=sector).count()
+        # We don't bulk-create stocks here anymore. It happens on demand.
         current_count = PortfolioStock.objects.filter(portfolio=portfolio).count()
-
-        if current_count < expected_count:
-            stocks_in_sector = Stock.objects.filter(sector=sector)
-            new_stocks = []
-            existing_stock_ids = set(PortfolioStock.objects.filter(portfolio=portfolio).values_list('stock_id', flat=True))
-            
-            for s in stocks_in_sector:
-                if s.id not in existing_stock_ids:
-                    new_stocks.append(PortfolioStock(
-                        portfolio=portfolio,
-                        stock=s,
-                        quantity=10,
-                        buy_price=0.0,
-                        current_price=0.0,
-                        pe_ratio=None,
-                        max_price=0.0,
-                        discount_level=0.0,
-                        opportunity=0.0
-                    ))
-            if new_stocks:
-                PortfolioStock.objects.bulk_create(new_stocks, ignore_conflicts=True)
-                current_count = PortfolioStock.objects.filter(portfolio=portfolio).count()
+        if current_count == 0:
+            current_count = Stock.objects.filter(sector=sector).count()
 
         sector_data.append({
-            "id": str(portfolio.id), # Dynamic route uses DB ID natively, super clean!
+            "id": str(portfolio.id),
             "name": portfolio_name,
             "sector": clean_sector,
             "type": "sector",
@@ -2638,6 +2712,112 @@ def sync_sector_portfolios():
         })
 
     return sorted(sector_data, key=lambda x: x["name"])
+
+
+def get_sector_portfolio_stocks(portfolio_id):
+    """
+    Fetch and update stocks for a specific sector portfolio.
+    This version uses the pre-cached StockData table for high performance
+    and avoids live API calls, relying on the background sync.
+    """
+    try:
+        portfolio = Portfolio.objects.get(id=portfolio_id)
+    except Portfolio.DoesNotExist:
+        return []
+
+    # Use a 1-minute cache for responsiveness
+    portfolio_cache_key = f"processed_sector_v2_{portfolio_id}"
+    cached_data = cache.get(portfolio_cache_key)
+    if cached_data:
+        return cached_data
+
+    # Identify the sector from the portfolio name
+    sector_name = portfolio.name.replace(" Portfolio", "")
+    
+    # 1. Get all symbols for the given sector from the canonical Stock model
+    symbols_in_sector = list(Stock.objects.filter(sector__iexact=sector_name).values_list('symbol', flat=True))
+    
+    if not symbols_in_sector:
+        return []
+
+    # 2. Fetch all corresponding data from the StockData cache table in one query
+    stocks_data = StockData.objects.filter(symbol__in=symbols_in_sector)
+    
+    # Create a lookup map for quick access
+    data_map = {s.symbol: s for s in stocks_data}
+
+    all_processed = []
+    # 3. Iterate through the symbols to ensure all stocks from the sector are included
+    for symbol in symbols_in_sector:
+        try:
+            db_data = data_map.get(symbol)
+            
+            # If data is missing from StockData, try to fetch it once on the fly
+            if not db_data:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    ticker_df = ticker.history(period="5d")
+                    if not ticker_df.empty:
+                        price = float(ticker_df['Close'].iloc[-1])
+                        max_52w = float(ticker_df['High'].max()) # Simplified for on-the-fly
+                        pe = get_safe_pe_ratio(symbol, ticker)
+                        
+                        db_data, _ = StockData.objects.update_or_create(
+                            symbol=symbol,
+                            defaults={
+                                "current_price": price,
+                                "pe_ratio": pe,
+                                "max_price_52w": max_52w,
+                                "company_name": symbol,
+                                "last_sync": timezone.now()
+                            }
+                        )
+                except Exception:
+                    pass
+
+            # If data exists but PE is null, try to fetch it once on the fly
+            pe_val = db_data.pe_ratio if db_data else None
+            if db_data and pe_val is None:
+                pe_val = get_safe_pe_ratio(symbol)
+                if pe_val:
+                    db_data.pe_ratio = pe_val
+                    db_data.save()
+            
+            current_price = db_data.current_price if db_data else None
+            max_price = db_data.max_price_52w if db_data else None
+            comp_name = db_data.company_name if db_data else symbol
+            
+            disc, opp = calculate_stock_metrics(current_price, max_price, pe_val)
+
+            # Convert current_price to float once and handle None
+            current_price_float = float(current_price) if current_price is not None else None
+
+            all_processed.append({
+                "id": f"sector_{symbol}",
+                "symbol": symbol,
+                "company_name": comp_name,
+                "current_price": round(current_price_float, 2) if current_price_float is not None else None,
+                "buy_price": round(current_price_float * 0.95, 2) if current_price_float is not None else None,
+                "quantity": 10, # Mock quantity for display
+                "pe_ratio": pe_val,
+                "max_price": round(float(max_price), 2) if max_price is not None else None,
+                "discount_level": disc,
+                "opportunity": opp,
+                "investment_value": round((current_price_float * 0.95) * 10, 2) if current_price_float is not None else None,
+                "current_value": round(current_price_float * 10, 2) if current_price_float is not None else None,
+                "pnl": round((current_price_float - (current_price_float * 0.95)) * 10, 2) if current_price_float is not None else None,
+                "pnl_pct": 5.0 if current_price_float is not None else None,
+                "sector": sector_name
+            })
+        except Exception as e:
+            # If a single stock fails, log it and continue
+            print(f"Warning: Failed to process stock {symbol} in sector {sector_name}. Error: {e}. Skipping.")
+            continue
+
+    # Cache the processed data for 1 minute
+    cache.set(portfolio_cache_key, all_processed, 60)
+    
+    return all_processed
 
 
 class SectorPortfolioListAPIView(APIView):

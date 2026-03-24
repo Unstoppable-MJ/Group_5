@@ -20,8 +20,6 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
 
   useEffect(() => {
     if (!activePortfolio) return;
-    if (fetchLock.current === activePortfolio) return; // Prevent duplicate requests
-    fetchLock.current = activePortfolio;
 
     let isMounted = true;
 
@@ -29,6 +27,7 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
       API.get(`portfolio-stocks/?portfolio_id=${activePortfolio}`)
         .then((res) => {
           if (!isMounted) return;
+          console.log('res', res)
           setStocks(res.data);
           if (res.data.length > 0) {
             const pureSymbol = res.data[0].symbol.replace(".NS", "");
@@ -39,14 +38,13 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
         })
         .catch((err) => {
           console.error("Dashboard fetch error:", err);
-          fetchLock.current = ""; // Unlock on error
         });
     };
 
     fetchData();
 
     return () => { isMounted = false; };
-  }, [activePortfolio]);
+  }, [activePortfolio, navigate]);
 
   const handleDeletePortfolio = () => {
     if (!activePortfolio) return;

@@ -49,7 +49,8 @@ const Chatbot = () => {
       {/* Chat Button */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-lg transition-all duration-300"
+        style={{ backgroundColor: 'rgb(129, 140, 248)' }}
+        className="text-white p-4 rounded-full shadow-lg transition-all duration-300 hover:opacity-90"
       >
         {isOpen ? (
           <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -66,10 +67,10 @@ const Chatbot = () => {
       {isOpen && (
         <div className="absolute bottom-16 right-0 w-80 sm:w-96 h-[500px] bg-white rounded-2xl shadow-2xl flex flex-col border border-gray-200 overflow-hidden animate-in slide-in-from-bottom-5">
           {/* Header */}
-          <div className="bg-blue-600 p-4 text-white font-bold flex justify-between items-center">
+          <div style={{ backgroundColor: 'rgb(129, 140, 248)' }} className="p-4 text-white font-bold flex justify-between items-center">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-              <span>AI Trading Assistant</span>
+              <span>StockSense</span>
             </div>
             <button onClick={() => setIsOpen(false)} className="hover:text-gray-200">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -85,7 +86,8 @@ const Chatbot = () => {
                 <p className="mb-4">Hello! How can I help you with your stock portfolio today?</p>
                 <button
                   onClick={() => handleSend(null, null, true)}
-                  className="bg-blue-50 hover:bg-blue-100 text-blue-600 px-4 py-2 rounded-xl text-sm font-medium transition-colors border border-blue-100 flex items-center gap-2 mx-auto"
+                  style={{ color: 'rgb(129, 140, 248)', borderColor: 'rgba(129, 140, 248, 0.2)', backgroundColor: 'rgba(129, 140, 248, 0.05)' }}
+                  className="px-4 py-2 rounded-xl text-sm font-medium transition-colors border flex items-center gap-2 mx-auto hover:bg-[rgba(129,140,248,0.1)]"
                 >
                   <span>💡 Get Recommendations</span>
                 </button>
@@ -97,9 +99,10 @@ const Chatbot = () => {
                 className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
+                  style={msg.role === 'user' ? { backgroundColor: 'rgb(129, 140, 248)' } : {}}
                   className={`max-w-[80%] p-3 rounded-2xl ${
                     msg.role === 'user'
-                      ? 'bg-blue-600 text-white rounded-br-none'
+                      ? 'text-white rounded-br-none'
                       : 'bg-white text-gray-800 border border-gray-200 rounded-bl-none shadow-sm'
                   }`}
                 >
@@ -143,12 +146,14 @@ const Chatbot = () => {
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="Ask about stocks, portfolios..."
-                className="flex-1 bg-gray-100 border-none rounded-xl px-4 py-2 text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
+                className="flex-1 bg-gray-100 border-none rounded-xl px-4 py-2 text-sm text-gray-900 focus:ring-2 outline-none"
+                style={{ '--tw-ring-color': 'rgba(129, 140, 248, 0.5)' }}
               />
               <button
                 type="submit"
                 disabled={isLoading || !message.trim()}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white p-2 rounded-xl transition-colors shadow-md"
+                style={{ backgroundColor: 'rgb(129, 140, 248)' }}
+                className="disabled:opacity-50 text-white p-2 rounded-xl transition-colors shadow-md hover:opacity-90"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />

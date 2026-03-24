@@ -92,6 +92,11 @@ export default function PortfolioDetails({ activePortfolio }) {
             groups[sector].push(stock);
         });
 
+        // Sort stocks within each group alphabetically by symbol
+        for (const sector in groups) {
+            groups[sector].sort((a, b) => a.symbol.localeCompare(b.symbol));
+        }
+
         const sortedSectors = Object.keys(groups).sort((a, b) => {
             if (a === "Other/Unknown") return 1;
             if (b === "Other/Unknown") return -1;

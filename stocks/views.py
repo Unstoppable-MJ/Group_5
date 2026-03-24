@@ -5,6 +5,13 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 import yfinance as yf
+import requests
+
+# Set up a session with a user-agent to avoid "Invalid Crumb" issues
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+})
 
 from .models import Stock, PortfolioStock
 from portfolio.models import Portfolio
@@ -209,7 +216,7 @@ class AddStockAPIView(APIView):
             yahoo_symbol = symbol + ".NS"
 
             try:
-                ticker = yf.Ticker(yahoo_symbol)
+                ticker = yf.Ticker(yahoo_symbol, session=session)
                 data = ticker.info
 
                 current_price = data.get("currentPrice")
@@ -315,7 +322,7 @@ class StockPreviewAPIView(APIView):
         yahoo_symbol = symbol.upper() if symbol.upper().endswith(".NS") else symbol.upper() + ".NS"
 
         try:
-            ticker = yf.Ticker(yahoo_symbol)
+            ticker = yf.Ticker(yahoo_symbol, session=session)
             data = ticker.info
 
             current_price = data.get("currentPrice") or data.get("regularMarketPrice") or data.get("previousClose")
@@ -512,7 +519,7 @@ class PortfolioGrowthAPIView(APIView):
         try:
             # Download 1 month of historical close prices for all unique symbols
             import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
+            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
 
             # Reformat downloaded data into a daily lookup map
             # day_map[date_string] = { "TCS.NS": 3500, "INFY.NS": 1400 }
@@ -593,7 +600,7 @@ class MultiStockHistoryAPIView(APIView):
         try:
             # Download multiple symbols at once
             import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
+            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
             
             result = {}
             # Handle single symbol case vs multiple symbols case in yf.download result structure
@@ -687,7 +694,7 @@ class StockPredictionAPIView(APIView):
         history_period = "2y" if model_type == "deep_learning" else "1y"
 
         try:
-            ticker = yf.Ticker(yahoo_symbol)
+            ticker = yf.Ticker(yahoo_symbol, session=session)
             df = ticker.history(period=history_period)
             if df.empty:
                 return Response({"error": "No historical data found"}, status=404)

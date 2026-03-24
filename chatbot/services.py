@@ -59,12 +59,16 @@ def get_chatbot_response(user_input: str, history: list = None, user_id: str = N
 
     # Define the retrieve node
     def retrieve(state: State):
-        last_message = state["messages"][-1].content
-        # For recommendations, we search for "top performing stocks" or "investment ideas"
-        query = "stock investment recommendations and market trends" if is_recommendation else last_message
-        docs = vector_store.similarity_search(query, k=5)
-        context = "\n".join([doc.page_content for doc in docs])
-        return {"context": context}
+        try:
+            last_message = state["messages"][-1].content
+            # For recommendations, we search for "top performing stocks" or "investment ideas"
+            query = "stock investment recommendations and market trends" if is_recommendation else last_message
+            docs = vector_store.similarity_search(query, k=5)
+            context = "\n".join([doc.page_content for doc in docs])
+            return {"context": context}
+        except Exception as e:
+            print(f"Retrieval error: {e}")
+            return {"context": "Context retrieval failed due to API limitations."}
 
     # Define the chatbot node
     def chatbot(state: State):
@@ -144,8 +148,12 @@ If the context doesn't contain the answer, use your general knowledge but mentio
 Encourage the user to log in to see their personal portfolio analysis.
 """
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
-        response = llm.invoke(messages)
-        return {"messages": [response]}
+        try:
+            response = llm.invoke(messages)
+            return {"messages": [response]}
+        except Exception as e:
+            print(f"Chatbot invoke error: {e}")
+            return {"messages": [AIMessage(content="I'm sorry, I encountered an error while processing your request. Please check if your Gemini API key is valid and not leaked.")]}
 
     # Build the graph
     workflow = StateGraph(State)

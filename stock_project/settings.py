@@ -11,6 +11,10 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -133,7 +137,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # AI Review Configuration (Gemini API)
 # IMPORTANT: Replace this with your actual Gemini API Key
-GEMINI_API_KEY ="AIzaSyBvK2LPZKy7OqBOOeNIqPCSRW65kgR3vzE"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Telegram Bot Configuration
 # Get your token from @BotFather on Telegram

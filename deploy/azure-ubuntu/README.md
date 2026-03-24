@@ -13,13 +13,22 @@ sudo apt update
 sudo apt install -y python3 python3-venv python3-dev build-essential libpq-dev nginx postgresql postgresql-contrib nodejs npm
 ```
 
+For a one-shot setup on your VM `20.162.106.26`, you can also use [deploy/azure-ubuntu/setup_vm.sh](/c:/Users/sudar/OneDrive/Desktop/Praju%20Bizmetric/ChatSense/Group_5/deploy/azure-ubuntu/setup_vm.sh) after setting `REPO_URL`, `DB_PASSWORD`, `DJANGO_SECRET_KEY`, `GEMINI_API_KEY`, and `TELEGRAM_BOT_TOKEN`.
+
 ## 2. Copy the project
 
 ```bash
 sudo mkdir -p /opt/chatsense
-sudo chown -R $USER:$USER /opt/chatsense
+sudo chown -R chatsense:chatsense /opt/chatsense
 git clone <your-repo-url> /opt/chatsense/app
 cd /opt/chatsense/app
+```
+
+If the `chatsense` Linux user does not exist yet:
+
+```bash
+sudo useradd -r -m -d /home/chatsense -s /bin/bash chatsense
+sudo usermod -a -G www-data chatsense
 ```
 
 ## 3. Backend environment
@@ -31,7 +40,7 @@ pip install --upgrade pip
 pip install -r requirements.ubuntu.txt
 ```
 
-Create `/etc/chatsense/backend.env` from `.env.example` and set real values.
+Create `/etc/chatsense/backend.env` from `.env.example` and set real values. The example already includes your current public IP `20.162.106.26`.
 
 ```bash
 sudo mkdir -p /etc/chatsense
@@ -72,7 +81,7 @@ npm ci
 npm run build
 ```
 
-Leave `VITE_API_BASE_URL=/api/` when using the provided nginx config.
+Leave `VITE_API_BASE_URL=/api/` when using the provided nginx config for `20.162.106.26`.
 
 ## 7. systemd services
 

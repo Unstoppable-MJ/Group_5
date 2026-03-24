@@ -3,7 +3,7 @@ Description=ChatSense Django backend (Gunicorn)
 After=network.target
 
 [Service]
-User=azureuser
+User=chatsense
 Group=www-data
 WorkingDirectory=/opt/chatsense/app
 EnvironmentFile=/etc/chatsense/backend.env

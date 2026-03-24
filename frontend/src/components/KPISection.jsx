@@ -1,9 +1,11 @@
 import { motion } from "framer-motion";
 
 export default function KPISection({ stocks }) {
-  const avgPE = stocks.length
-    ? stocks.reduce((acc, s) => acc + s.pe_ratio, 0) / stocks.length
-    : 0;
+  const validPEStocks = stocks.filter(s => s.pe_ratio != null && s.pe_ratio > 0);
+  const avgPE = validPEStocks.length
+    ? validPEStocks.reduce((acc, s) => acc + s.pe_ratio, 0) / validPEStocks.length
+    : null;
+
 
   const avgDiscount = stocks.length
     ? stocks.reduce((acc, s) => acc + s.discount_level, 0) / stocks.length
@@ -14,7 +16,8 @@ export default function KPISection({ stocks }) {
     : 0;
 
   const kpis = [
-    { title: "Average P/E", value: avgPE.toFixed(1), icon: "⚖️", color: "text-blue-400", bg: "bg-blue-500/10" },
+    { title: "Average P/E", value: avgPE ? avgPE.toFixed(1) : "N/A", icon: "⚖️", color: "text-blue-400", bg: "bg-blue-500/10" },
+
     { title: "Avg Discount", value: `${avgDiscount.toFixed(1)}%`, icon: "🏷️", color: "text-purple-400", bg: "bg-purple-500/10" },
     { title: "Opportunity Score", value: `${avgOpportunity.toFixed(1)}%`, icon: "🔥", color: "text-orange-400", bg: "bg-orange-500/10" },
   ];

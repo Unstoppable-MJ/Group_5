@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import API from "../services/api";
 import KPISection from "../components/KPISection";
@@ -16,21 +16,36 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
   const [stocks, setStocks] = useState([]);
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const fetchLock = useRef("");
 
   useEffect(() => {
     if (!activePortfolio) return;
+    if (fetchLock.current === activePortfolio) return; // Prevent duplicate requests
+    fetchLock.current = activePortfolio;
 
-    API.get(`portfolio-stocks/?portfolio_id=${activePortfolio}`)
-      .then((res) => {
-        setStocks(res.data);
-        if (res.data.length > 0) {
-          const pureSymbol = res.data[0].symbol.replace(".NS", "");
-          setSelectedSymbol(pureSymbol);
-        } else {
-          setSelectedSymbol(null);
-        }
-      })
-      .catch((err) => console.log(err));
+    let isMounted = true;
+
+    const fetchData = () => {
+      API.get(`portfolio-stocks/?portfolio_id=${activePortfolio}`)
+        .then((res) => {
+          if (!isMounted) return;
+          setStocks(res.data);
+          if (res.data.length > 0) {
+            const pureSymbol = res.data[0].symbol.replace(".NS", "");
+            setSelectedSymbol(pureSymbol);
+          } else {
+            setSelectedSymbol(null);
+          }
+        })
+        .catch((err) => {
+          console.error("Dashboard fetch error:", err);
+          fetchLock.current = ""; // Unlock on error
+        });
+    };
+
+    fetchData();
+
+    return () => { isMounted = false; };
   }, [activePortfolio]);
 
   const handleDeletePortfolio = () => {
@@ -59,6 +74,7 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
   );
 
   const totalProfit = totalCurrent - totalInvestment;
+  const isBuiltin = ["india200", "usa200", "nifty50_builtin", "metals_builtin", "crypto_builtin"].includes(activePortfolio);
 
   return (
     <div className="space-y-8 pb-12">
@@ -77,26 +93,28 @@ export default function Dashboard({ activePortfolio: propPortfolio, portfolios }
               <h2 className="text-slate-400 font-medium tracking-wide uppercase text-sm">
                 Portfolio Performance
               </h2>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setIsEditModalOpen(true)}
-                  className="p-1.5 rounded-lg bg-slate-800/50 hover:bg-slate-700 text-slate-400 hover:text-white transition-all border border-slate-700/50"
-                  title="Edit Portfolio"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                  </svg>
-                </button>
-                <button
-                  onClick={handleDeletePortfolio}
-                  className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400/80 hover:text-rose-400 transition-all border border-rose-500/20"
-                  title="Delete Portfolio"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                </button>
-              </div>
+              {!isBuiltin && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setIsEditModalOpen(true)}
+                    className="p-1.5 rounded-lg bg-slate-800/50 hover:bg-slate-700 text-slate-400 hover:text-white transition-all border border-slate-700/50"
+                    title="Edit Portfolio"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={handleDeletePortfolio}
+                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400/80 hover:text-rose-400 transition-all border border-rose-500/20"
+                    title="Delete Portfolio"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              )}
             </div>
             <div className="text-5xl md:text-6xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-300">
               ₹{totalCurrent.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

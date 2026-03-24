@@ -27,17 +27,23 @@ export default function StockDetailPanel({ symbol, allStocks = [], portfolioId, 
     // Fetch focus stock preview
     useEffect(() => {
         if (symbol) {
+            let isMounted = true;
             setLoadingPreview(true);
             const safeSymbol = symbol.includes(".NS") ? symbol : `${symbol}.NS`;
             API.get(`stock-preview/?symbol=${safeSymbol}`)
                 .then((res) => {
-                    setPreview(res.data);
-                    setLoadingPreview(false);
+                    if (isMounted) {
+                        setPreview(res.data);
+                        setLoadingPreview(false);
+                    }
                 })
                 .catch(() => {
-                    setPreview(null);
-                    setLoadingPreview(false);
+                    if (isMounted) {
+                        setPreview(null);
+                        setLoadingPreview(false);
+                    }
                 });
+            return () => { isMounted = false; };
         } else {
             setPreview(null);
         }
@@ -46,16 +52,22 @@ export default function StockDetailPanel({ symbol, allStocks = [], portfolioId, 
     // Fetch portfolio-wide history for charts
     useEffect(() => {
         if (portfolioId) {
+            let isMounted = true;
             setLoadingHistory(true);
             API.get(`portfolio-history/?portfolio_id=${portfolioId}`)
                 .then((res) => {
-                    setHistoryData(res.data);
-                    setLoadingHistory(false);
+                    if (isMounted) {
+                        setHistoryData(res.data);
+                        setLoadingHistory(false);
+                    }
                 })
                 .catch(() => {
-                    setHistoryData({});
-                    setLoadingHistory(false);
+                    if (isMounted) {
+                        setHistoryData({});
+                        setLoadingHistory(false);
+                    }
                 });
+            return () => { isMounted = false; };
         }
     }, [portfolioId]);
 
@@ -63,10 +75,11 @@ export default function StockDetailPanel({ symbol, allStocks = [], portfolioId, 
         { label: "Symbol", key: "symbol", color: "text-white" },
         { label: "Company Name", key: "company_name", color: "text-emerald-400" },
         { label: "Current Price", key: "current_price", format: (v) => `₹${v?.toLocaleString("en-IN")}`, color: "text-white font-bold" },
-        { label: "Max Price (52W)", key: "max_price", format: (v) => `₹${v?.toLocaleString("en-IN")}`, color: "text-slate-300" },
-        { label: "P/E Ratio", key: "pe_ratio", color: "text-white" },
-        { label: "Discount Level", key: "discount_level", format: (v) => `${v?.toFixed(2)}%`, color: "text-purple-400" },
-        { label: "Opportunity Score", key: "opportunity", format: (v) => `${v?.toFixed(2)}%`, color: "text-orange-400" },
+        { label: "Max Price (52W)", key: "max_price", format: (v) => v ? `₹${v.toLocaleString("en-IN")}` : "N/A", color: "text-slate-300" },
+        { label: "P/E Ratio", key: "pe_ratio", format: (v) => v || "N/A", color: "text-white" },
+        { label: "Discount Level", key: "discount_level", format: (v) => v != null ? `${v.toFixed(2)}%` : "N/A", color: "text-purple-400" },
+        { label: "Opportunity Score", key: "opportunity", format: (v) => v != null ? `${v.toFixed(2)}%` : "N/A", color: "text-orange-400" },
+
     ];
 
     if (allStocks.length === 0 && !loadingPreview && !loadingHistory) {

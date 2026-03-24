@@ -32,12 +32,15 @@ const CustomTooltip = ({ active, payload }) => {
 export default function PEAnalysisChart({ stocks }) {
   if (!stocks.length) return null;
 
-  const chartData = stocks.map((s) => ({
-    symbol: s.symbol,
-    pe: Number(s.pe_ratio) || 0,
-    discount: Number(s.discount_level) || 0,
-    opportunity: Number(s.opportunity) || 5
-  }));
+  const chartData = stocks
+    .filter(s => s.pe_ratio != null && s.pe_ratio > 0)
+    .map((s) => ({
+      symbol: s.symbol,
+      pe: Number(s.pe_ratio),
+      discount: Number(s.discount_level) || 0,
+      opportunity: Number(s.opportunity) || 5
+    }));
+
 
   return (
     <div className="bg-slate-900/40 backdrop-blur-xl p-6 rounded-3xl border border-slate-800 shadow-2xl h-full flex flex-col">

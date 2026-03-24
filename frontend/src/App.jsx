@@ -49,20 +49,27 @@ function App() {
   const [portfolios, setPortfolios] = useState([]);
   const [activePortfolio, setActivePortfolio] = useState("");
 
-  const fetchPortfolios = () => {
+  const fetchPortfolios = async () => {
     const userId = localStorage.getItem("user_id");
     if (!userId) return; // No auth, no portfolios
 
-    API.get(`portfolios/?user_id=${userId}`)
-      .then((res) => {
-        setPortfolios(res.data);
-        if (res.data.length > 0 && !activePortfolio) {
-          setActivePortfolio(res.data[0].id);
-        } else if (res.data.length === 0) {
-          setActivePortfolio(""); // Clear active if empty
-        }
-      })
-      .catch((err) => console.log(err));
+    try {
+      const [portRes, sectorRes] = await Promise.all([
+        API.get(`portfolios/?user_id=${userId}`),
+        API.get('sector-portfolios/')
+      ]);
+
+      const combined = [...portRes.data, ...sectorRes.data];
+      setPortfolios(combined);
+
+      if (combined.length > 0 && !activePortfolio) {
+        setActivePortfolio(combined[0].id);
+      } else if (combined.length === 0) {
+        setActivePortfolio(""); // Clear active if empty
+      }
+    } catch (err) {
+      console.log("Error fetching portfolios: ", err);
+    }
   };
 
   useEffect(() => {

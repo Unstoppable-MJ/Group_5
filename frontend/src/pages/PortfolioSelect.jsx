@@ -25,15 +25,19 @@ export default function PortfolioSelect({ portfolios }) {
 
     const standardPortfolios = portfolios.filter(p => p.type === 'standard');
     const aiPortfolios = portfolios.filter(p => p.type === 'ai_builtin' || p.type === 'ai_custom');
+    const sectorPortfolios = portfolios.filter(p => p.type === 'sector');
 
     const PortfolioCard = ({ portfolio }) => {
-        let displayIcon = "📁";
         let isAI = false;
+        let isSector = portfolio.type === 'sector';
+        let displayIcon = isSector ? "📊" : "📁";
         if (portfolio.type.includes("ai")) {
             isAI = true;
             if (portfolio.name.includes("NIFTY 50")) displayIcon = "⚡";
             else if (portfolio.name.includes("Precious Metals")) displayIcon = "🥇";
             else if (portfolio.name.includes("Crypto")) displayIcon = "🪙";
+            else if (portfolio.id === "india200") displayIcon = "🇮🇳";
+            else if (portfolio.id === "usa200") displayIcon = "🇺🇸";
             else displayIcon = "✨";
         }
 
@@ -89,8 +93,8 @@ export default function PortfolioSelect({ portfolios }) {
 
                     <div className="flex items-center justify-between mt-auto pt-6 border-t border-slate-800/50">
                         <div className="flex flex-col">
-                            <span className={`text-[10px] font-bold tracking-widest uppercase mb-1 ${isAI ? 'text-emerald-400' : 'text-slate-500'}`}>
-                                {isAI ? 'AI Powered' : 'Standard'}
+                            <span className={`text-[10px] font-bold tracking-widest uppercase mb-1 ${isAI ? 'text-emerald-400' : isSector ? 'text-blue-400' : 'text-slate-500'}`}>
+                                {isAI ? '⚡ AI' : isSector ? '📊 Sector' : 'Standard'}
                             </span>
                             <span className="text-white font-semibold">
                                 {portfolio.stock_count || 0} Stocks
@@ -125,36 +129,72 @@ export default function PortfolioSelect({ portfolios }) {
                 variants={containerVariants}
                 initial="hidden"
                 animate="visible"
-                className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8"
+                className="space-y-16"
             >
-                {aiPortfolios.length > 0 && (
-                    <>
-                        {aiPortfolios.map(p => (
-                            <PortfolioCard key={p.id} portfolio={p} />
-                        ))}
-                    </>
+                {/* Sector Portfolios Section */}
+                {sectorPortfolios.length > 0 && (
+                    <section>
+                        <div className="flex items-center gap-4 mb-8">
+                            <h3 className="text-xl font-bold text-amber-400 uppercase tracking-widest flex items-center gap-2">
+                                <span className="w-8 h-1 bg-amber-500 rounded-full"></span>
+                                Sector Portfolios
+                            </h3>
+                            <span className="text-slate-600 text-sm font-medium">{sectorPortfolios.length} available</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                            {sectorPortfolios.map(p => (
+                                <PortfolioCard key={p.id} portfolio={p} />
+                            ))}
+                        </div>
+                    </section>
                 )}
 
-                {standardPortfolios.length > 0 && (
-                    <>
+                {/* AI Portfolios Section */}
+                {aiPortfolios.length > 0 && (
+                    <section>
+                        <div className="flex items-center gap-4 mb-8">
+                            <h3 className="text-xl font-bold text-emerald-400 uppercase tracking-widest flex items-center gap-2">
+                                <span className="w-8 h-1 bg-emerald-500 rounded-full"></span>
+                                AI Portfolios
+                            </h3>
+                            <span className="text-slate-600 text-sm font-medium">{aiPortfolios.length} available</span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                            {aiPortfolios.map(p => (
+                                <PortfolioCard key={p.id} portfolio={p} />
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                {/* Your Portfolios Section */}
+                <section>
+                    <div className="flex items-center gap-4 mb-8">
+                        <h3 className="text-xl font-bold text-blue-400 uppercase tracking-widest flex items-center gap-2">
+                            <span className="w-8 h-1 bg-blue-500 rounded-full"></span>
+                            Your Portfolios
+                        </h3>
+                        <span className="text-slate-600 text-sm font-medium">{standardPortfolios.length} custom workspaces</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                         {standardPortfolios.map(p => (
                             <PortfolioCard key={p.id} portfolio={p} />
                         ))}
-                    </>
-                )}
 
-                {/* Create New Card */}
-                <motion.div
-                    variants={cardVariants}
-                    whileHover={{ scale: 1.02 }}
-                    className="relative group bg-slate-900/20 border-2 border-dashed border-slate-800 p-8 rounded-[2.5rem] flex flex-col items-center justify-center text-center transition-all hover:bg-slate-900/40 hover:border-slate-700 cursor-pointer min-h-[320px]"
-                >
-                    <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-4 group-hover:bg-slate-700 transition-colors">
-                        <span className="text-3xl text-slate-500 group-hover:text-slate-300">+</span>
+                        {/* Create New Card */}
+                        <motion.div
+                            variants={cardVariants}
+                            whileHover={{ scale: 1.02 }}
+                            className="relative group bg-slate-900/20 border-2 border-dashed border-slate-800 p-8 rounded-[2.5rem] flex flex-col items-center justify-center text-center transition-all hover:bg-slate-900/40 hover:border-slate-700 cursor-pointer min-h-[320px]"
+                        >
+                            <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-4 group-hover:bg-slate-700 transition-colors">
+                                <span className="text-3xl text-slate-500 group-hover:text-slate-300">+</span>
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-300 mb-2">Create Portfolio</h3>
+                            <p className="text-slate-500 text-sm">Add a new workspace to your wealth journey</p>
+                        </motion.div>
                     </div>
-                    <h3 className="text-xl font-bold text-slate-300 mb-2">Create Portfolio</h3>
-                    <p className="text-slate-500 text-sm">Add a new workspace to your wealth journey</p>
-                </motion.div>
+                </section>
             </motion.div>
 
             {portfolios.length === 0 && (

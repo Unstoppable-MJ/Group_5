@@ -76,7 +76,8 @@ Create `frontend/.env.production` from `frontend/.env.production.example`.
 ```bash
 cd /opt/chatsense/app/frontend
 cp .env.production.example .env.production
-npm ci
+rm -rf node_modules package-lock.json
+npm install
 npm run build
 ```
 

@@ -75,7 +75,7 @@ sudo -u "${APP_USER}" "${VENV_DIR}/bin/python" "${APP_DIR}/manage.py" migrate
 sudo -u "${APP_USER}" "${VENV_DIR}/bin/python" "${APP_DIR}/manage.py" collectstatic --noinput
 sudo -u "${APP_USER}" "${VENV_DIR}/bin/python" "${APP_DIR}/manage.py" sync_stock_data
 
-sudo -u "${APP_USER}" bash -lc "cd '${APP_DIR}/frontend' && cp -f .env.production.example .env.production && npm ci && npm run build"
+sudo -u "${APP_USER}" bash -lc "cd '${APP_DIR}/frontend' && cp -f .env.production.example .env.production && rm -rf node_modules package-lock.json && npm install && npm run build"
 
 sudo cp "${APP_DIR}/deploy/azure-ubuntu/chatsense-backend.service" /etc/systemd/system/
 sudo cp "${APP_DIR}/deploy/azure-ubuntu/chatsense-stock-sync.service" /etc/systemd/system/

@@ -21,6 +21,7 @@ export default function SentimentResult() {
         API.post("sentiment/", { symbol: stockSymbol })
             .then((res) => {
                 setData(res.data);
+                console.log('res.data', res.data)
                 setLoading(false);
             })
             .catch((err) => {

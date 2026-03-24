@@ -92,6 +92,11 @@ export default function PortfolioDetails({ activePortfolio }) {
             groups[sector].push(stock);
         });
 
+        // Sort stocks within each group alphabetically by symbol
+        for (const sector in groups) {
+            groups[sector].sort((a, b) => a.symbol.localeCompare(b.symbol));
+        }
+
         const sortedSectors = Object.keys(groups).sort((a, b) => {
             if (a === "Other/Unknown") return 1;
             if (b === "Other/Unknown") return -1;
@@ -104,16 +109,22 @@ export default function PortfolioDetails({ activePortfolio }) {
     // 3. Fetch focus stock preview
     useEffect(() => {
         if (selectedSymbol) {
+            let isMounted = true;
             setLoadingPreview(true);
             API.get(`stock-preview/?symbol=${selectedSymbol}`)
                 .then((res) => {
-                    setPreview(res.data);
-                    setLoadingPreview(false);
+                    if (isMounted) {
+                        setPreview(res.data);
+                        setLoadingPreview(false);
+                    }
                 })
                 .catch(() => {
-                    setPreview(null);
-                    setLoadingPreview(false);
+                    if (isMounted) {
+                        setPreview(null);
+                        setLoadingPreview(false);
+                    }
                 });
+            return () => { isMounted = false; };
         } else {
             setPreview(null);
         }
@@ -122,16 +133,22 @@ export default function PortfolioDetails({ activePortfolio }) {
     // 4. Fetch portfolio-wide history for Performance Grid charts
     useEffect(() => {
         if (activePortfolio) {
+            let isMounted = true;
             setLoadingHistory(true);
             API.get(`portfolio-history/?portfolio_id=${activePortfolio}`)
                 .then((res) => {
-                    setHistoryData(res.data);
-                    setLoadingHistory(false);
+                    if (isMounted) {
+                        setHistoryData(res.data);
+                        setLoadingHistory(false);
+                    }
                 })
                 .catch(() => {
-                    setHistoryData({});
-                    setLoadingHistory(false);
+                    if (isMounted) {
+                        setHistoryData({});
+                        setLoadingHistory(false);
+                    }
                 });
+            return () => { isMounted = false; };
         }
     }, [activePortfolio]);
 

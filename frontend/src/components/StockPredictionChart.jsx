@@ -122,7 +122,12 @@ export default function StockPredictionChart({ symbol, allStocks = [], onSymbolC
         };
         const apiModelType = categoryMap[modelCategory] || "regression";
 
-        API.get(`stock-prediction/?ticker=${symbol}&forecast_days=${horizon}&model_type=${apiModelType}&model_name=${encodeURIComponent(modelName)}`)
+        // Extract portfolioId from URL if possible, or use a fallback
+        const pathParts = window.location.pathname.split("/");
+        const portfolioId = pathParts.includes("dashboard") ? pathParts[pathParts.indexOf("dashboard") + 1] : "";
+
+        API.get(`stock-prediction/?ticker=${symbol}&forecast_days=${horizon}&model_type=${apiModelType}&model_name=${encodeURIComponent(modelName)}&portfolio_id=${portfolioId}`)
+
             .then(res => {
                 const historyData = res.data.history.map(d => ({
                     date: d.date,

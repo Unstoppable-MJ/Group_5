@@ -128,10 +128,11 @@ export default function StockCard({ stock, index, isExpanded, onToggle, onRemove
 
         {!isExpanded && (
           <div className="mt-4 flex justify-between items-center text-[10px] text-slate-500 pt-3 border-t border-slate-800/50 font-bold uppercase tracking-widest">
-            <span>P/E: <span className="text-slate-300">{stock.pe_ratio}</span></span>
-            <span>Disc: <span className="text-slate-300">{stock.discount_level.toFixed(1)}%</span></span>
+            <span>P/E: <span className="text-slate-300">{stock.pe_ratio || "N/A"}</span></span>
+            <span>Disc: <span className="text-slate-300">{(stock.discount_level || 0).toFixed(1)}%</span></span>
           </div>
         )}
+
       </div>
     </motion.div>
   );

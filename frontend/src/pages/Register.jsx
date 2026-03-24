@@ -9,6 +9,7 @@ export default function Register() {
         fullName: "",
         email: "",
         username: "",
+        phoneNumber: "",
         password: "",
         confirmPassword: "",
     });
@@ -33,20 +34,22 @@ export default function Register() {
             setLoading(true);
             const response = await API.post("register/", {
                 username: formData.username,
+                phone_number: formData.phoneNumber,
                 password: formData.password,
                 email: formData.email,
                 first_name: formData.fullName,
             });
 
             if (response.status === 201) {
-                if (response.data.user_id) {
+                if (response.data.token) {
+                    localStorage.setItem("token", response.data.token);
                     localStorage.setItem("user_id", response.data.user_id);
                     localStorage.setItem("username", response.data.username);
                 }
 
                 setSuccess(true);
                 setTimeout(() => {
-                    navigate("/dashboard");
+                    navigate("/welcome");
                 }, 2000);
             }
         } catch (err) {
@@ -75,7 +78,7 @@ export default function Register() {
                     <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
                         Create Account
                     </h2>
-                    <p className="text-slate-400 mt-2 text-sm text-center">Join Finova and start managing your portfolio</p>
+                    <p className="text-slate-400 mt-2 text-sm text-center">Join ChatSense and start managing your portfolio</p>
                 </div>
 
                 {error && (
@@ -90,7 +93,7 @@ export default function Register() {
                         animate={{ opacity: 1, y: 0 }}
                         className="mb-4 p-4 bg-emerald-500/10 border border-emerald-500/50 rounded-xl text-emerald-400 text-sm text-center font-medium"
                     >
-                        Account created successfully. Welcome to Finova. Redirecting...
+                        Account created successfully. Welcome to ChatSense. Redirecting...
                     </motion.div>
                 )}
 
@@ -125,6 +128,18 @@ export default function Register() {
                             name="username"
                             placeholder="Username"
                             value={formData.username}
+                            onChange={handleChange}
+                            required
+                            className="w-full p-4 rounded-xl bg-slate-950/50 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all duration-300"
+                        />
+                    </div>
+
+                    <div>
+                        <input
+                            type="tel"
+                            name="phoneNumber"
+                            placeholder="Phone Number (e.g. +91...)"
+                            value={formData.phoneNumber}
                             onChange={handleChange}
                             required
                             className="w-full p-4 rounded-xl bg-slate-950/50 border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all duration-300"

@@ -6,6 +6,7 @@ const CLUSTER_COLORS = ["#818cf8", "#34d399", "#f472b6", "#fbbf24", "#60a5fa", "
 
 export default function StockClusteringModule({ portfolioId, refreshTrigger }) {
     const [k, setK] = useState(3);
+    const [autoK, setAutoK] = useState(true);
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -15,7 +16,9 @@ export default function StockClusteringModule({ portfolioId, refreshTrigger }) {
 
         setLoading(true);
         setError(null);
-        API.get(`stock-clustering/?portfolio_id=${portfolioId}&k=${k}`)
+
+        const kValue = autoK ? "auto" : k;
+        API.get(`stock-clustering/?portfolio_id=${portfolioId}&k=${kValue}`)
             .then(res => {
                 if (res.data.pairs && res.data.pairs.length > 0) {
                     const processedPairs = res.data.pairs.map(pair => {
@@ -44,7 +47,7 @@ export default function StockClusteringModule({ portfolioId, refreshTrigger }) {
                 setError(err.response?.data?.error || "Failed to cluster assets");
                 setLoading(false);
             });
-    }, [portfolioId, k, refreshTrigger]);
+    }, [portfolioId, k, autoK, refreshTrigger]);
 
     if (loading && !data) return <div className="h-[400px] flex items-center justify-center text-slate-500">Running K-Means Analysis...</div>;
 
@@ -111,7 +114,7 @@ export default function StockClusteringModule({ portfolioId, refreshTrigger }) {
         <div className="bg-slate-900/40 backdrop-blur-md rounded-[2.5rem] border border-slate-800 p-8 shadow-2xl relative overflow-hidden group">
             <div className="absolute -top-24 -right-24 w-64 h-64 bg-emerald-500/5 rounded-full blur-[100px] group-hover:bg-emerald-500/10 transition-all duration-700" />
 
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 relative z-10">
+            <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 mb-10 relative z-10">
                 <div>
                     <h3 className="text-2xl font-black text-white flex items-center gap-3 tracking-tight">
                         <span className="bg-emerald-500/20 p-2 rounded-xl text-emerald-400 text-sm">AI</span>
@@ -120,25 +123,41 @@ export default function StockClusteringModule({ portfolioId, refreshTrigger }) {
                     <p className="text-slate-500 text-sm mt-1 font-medium">Multidimensional similarity grouping using K-Means</p>
                 </div>
 
-                <div className="bg-slate-950/50 p-4 rounded-2xl border border-slate-800 flex items-center gap-4">
-                    <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Clusters (K)</label>
-                    <input
-                        type="range"
-                        min="2"
-                        max="6"
-                        value={k}
-                        onChange={(e) => setK(parseInt(e.target.value))}
-                        className="w-24 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                    />
-                    <span className="text-emerald-400 font-bold bg-emerald-500/10 px-3 py-1 rounded-lg border border-emerald-500/20">{k}</span>
+                <div className="flex flex-wrap items-center gap-4 bg-slate-950/50 p-4 rounded-3xl border border-slate-800/50 backdrop-blur-sm">
+                    {/* Auto Toggle */}
+                    <button
+                        onClick={() => setAutoK(!autoK)}
+                        className={`px-4 py-2 rounded-2xl text-xs font-bold uppercase tracking-widest transition-all border ${autoK
+                            ? "bg-emerald-500 border-emerald-400 text-white shadow-[0_4px_12px_rgba(16,185,129,0.3)]"
+                            : "bg-slate-900 border-slate-700 text-slate-400 hover:text-white"
+                            }`}
+                    >
+                        {autoK ? "✨ Auto: ON" : "✨ Auto: OFF"}
+                    </button>
+
+                    <div className={`flex items-center gap-4 transition-all ${autoK ? "opacity-30 pointer-events-none grayscale" : "opacity-100"}`}>
+                        <label className="text-xs font-bold text-slate-400 uppercase tracking-widest">Select Number of Clusters</label>
+                        <input
+                            type="range"
+                            min="2"
+                            max="6"
+                            step="1"
+                            disabled={autoK}
+                            value={k}
+                            onChange={(e) => setK(parseInt(e.target.value))}
+                            className="w-32 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                        />
+                        <span className="text-emerald-400 font-bold bg-emerald-500/10 px-4 py-1.5 rounded-xl border border-emerald-500/20 shadow-inner">{data?.k || k}</span>
+                    </div>
                 </div>
             </div>
 
             {error ? (
                 <div className="h-[300px] flex items-center justify-center">
-                    <div className="text-center p-6 bg-rose-500/5 border border-rose-500/20 rounded-2xl">
-                        <p className="text-rose-400 font-medium mb-2">{error}</p>
-                        <p className="text-slate-500 text-xs text-balance">Add more unique stocks to your portfolio to enable clustering analysis.</p>
+                    <div className="text-center p-8 bg-rose-500/5 border border-rose-500/20 rounded-[2rem]">
+                        <p className="text-rose-400 font-bold mb-2 uppercase tracking-widest text-xs">Clustering Error</p>
+                        <p className="text-slate-400 text-sm mb-4">{error}</p>
+                        <p className="text-slate-600 text-[10px] uppercase font-bold tracking-widest">Requirement: 3+ unique assets with valid financial data</p>
                     </div>
                 </div>
             ) : (

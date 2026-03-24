@@ -167,15 +167,16 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
         style={{ background: "#0b1220", borderBottom: "1px solid rgba(255,255,255,0.08)" }}
         className="sticky top-0 z-40 w-full px-6 py-4 flex justify-between items-center"
       >
+        {/* Left: Logo */}
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-emerald-400 rounded-xl flex items-center justify-center shadow-inner">
             <span className="text-xl">📊</span>
           </div>
           <div className="hidden sm:flex flex-col justify-center">
             <h1 className="text-xl font-bold leading-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-300">
-              Finova
+              ChatSense
             </h1>
-            <motion.span
+            {/* <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 0.55 }}
               whileHover={{ opacity: 0.85 }}
@@ -183,44 +184,57 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
               className="text-[11px] italic font-medium tracking-wide bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400 cursor-default"
             >
               Powered by @Unstoppable-Mukteshwar
-            </motion.span>
+            </motion.span> */}
           </div>
         </div>
 
-        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-4">
-          <PortfolioDropdown
-            portfolios={portfolios}
-            activePortfolio={activePortfolio}
-            setActivePortfolio={setActivePortfolio}
-            navigate={navigate}
-            location={location}
-          />
+        {/* Center: Desktop Navigation */}
+        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 items-center gap-4">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => navigate('/portfolios')}
+            className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-sm font-semibold transition-all shadow-sm ${location.pathname === '/portfolios'
+                ? 'bg-blue-600 border-blue-500 text-white shadow-blue-500/20'
+                : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+          >
+            <span className="text-base">💼</span>
+            <span className="hidden lg:inline">Portfolios</span>
+          </motion.button>
+
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={() => navigate('/sentiment')}
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600/20 to-indigo-600/20 border border-blue-500/30 rounded-xl text-sm font-semibold text-blue-400 hover:text-blue-300 hover:border-blue-500/50 transition-all shadow-[0_0_20px_rgba(37,99,235,0.1)]"
-            title="Sentiment Analysis"
+            className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-sm font-semibold transition-all shadow-sm ${location.pathname.startsWith('/sentiment')
+                ? 'bg-indigo-600 border-indigo-500 text-white shadow-indigo-500/20'
+                : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
           >
             <span className="text-base">🎭</span>
-            <span className="hidden lg:inline">Sentiment Analysis</span>
+            <span className="hidden lg:inline">Sentiment</span>
           </motion.button>
         </div>
 
+        {/* Right: Actions and User Menu */}
         <div className="flex items-center gap-4 sm:gap-6">
-          <div className="md:hidden">
-            <PortfolioDropdown
-              portfolios={portfolios}
-              activePortfolio={activePortfolio}
-              setActivePortfolio={setActivePortfolio}
-              navigate={navigate}
-              location={location}
-            />
+          {/* Mobile Navigation Icons */}
+          <div className="flex md:hidden items-center gap-2">
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={() => navigate('/portfolios')}
+              className="w-10 h-10 flex items-center justify-center bg-slate-800/50 border border-slate-700 rounded-xl text-lg"
+              title="Portfolios"
+            >
+              💼
+            </motion.button>
             <motion.button
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
               onClick={() => navigate('/sentiment')}
-              className="w-10 h-10 flex items-center justify-center bg-blue-500/10 border border-blue-500/20 rounded-xl text-lg shadow-lg"
+              className="w-10 h-10 flex items-center justify-center bg-slate-800/50 border border-slate-700 rounded-xl text-lg"
               title="Sentiment Analysis"
             >
               🎭
@@ -240,7 +254,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
             whileHover={{ scale: 1.03 }}
             transition={{ duration: 0.2 }}
             onClick={() => setShowAddStock(true)}
-            disabled={!activePortfolio || location.pathname === '/nifty50-pca' || location.pathname === '/precious-metals' || location.pathname === '/crypto-ai'}
+            disabled={!activePortfolio && !location.pathname.includes('/dashboard/')}
             className="bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-semibold px-4 py-2 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.3)] text-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
           >
             <span>+</span> <span className="hidden sm:inline">Asset</span>
@@ -295,21 +309,24 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
           activePortfolio={activePortfolio}
         />,
         document.body
-      )}
+      )
+      }
 
-      {showAddPortfolio && createPortal(
-        <AddPortfolioModal
-          isOpen={showAddPortfolio}
-          onClose={() => setShowAddPortfolio(false)}
-          onPortfolioAdded={(newPortfolio) => {
-            fetchPortfolios();
-            setActivePortfolio(newPortfolio.id);
-            // Open Add Asset immediately after creating portfolio
-            setTimeout(() => setShowAddStock(true), 300);
-          }}
-        />,
-        document.body
-      )}
+      {
+        showAddPortfolio && createPortal(
+          <AddPortfolioModal
+            isOpen={showAddPortfolio}
+            onClose={() => setShowAddPortfolio(false)}
+            onPortfolioAdded={(newPortfolio) => {
+              fetchPortfolios();
+              setActivePortfolio(newPortfolio.id);
+              // Open Add Asset immediately after creating portfolio
+              setTimeout(() => setShowAddStock(true), 300);
+            }}
+          />,
+          document.body
+        )
+      }
     </>
   );
 }

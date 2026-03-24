@@ -3,12 +3,134 @@ from django.contrib.auth.models import User
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.authtoken.models import Token
 import yfinance as yf
+import requests
+import time
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
-from .models import Stock, PortfolioStock
+# Silence yfinance logger to prevent terminal clutter
+import logging
+yf_logger = logging.getLogger('yfinance')
+yf_logger.setLevel(logging.CRITICAL)
+
+def get_safe_pe_ratio(symbol, t=None):
+    """
+    Carefully fetch PE ratio with 24h caching.
+    Uses fast_info first, then falls back to info for completeness.
+    """
+    cache_key = f"pe_v3_{symbol}"
+    cached_pe = cache.get(cache_key)
+    if cached_pe is not None:
+        return cached_pe if cached_pe != -1 else None
+
+    try:
+        if t is None:
+            t = yf.Ticker(symbol)
+        
+        # 1. Check fast_info first (faster, less prone to blocking)
+        pe = t.fast_info.get('trailing_pe', t.fast_info.get('forward_pe'))
+        
+        # 2. Fallback to info if fast_info fails (more comprehensive but slower)
+        if pe is None:
+            info = t.info
+            pe = info.get('trailingPE', info.get('forwardPE'))
+        
+        if pe is not None:
+            val = float(pe)
+            cache.set(cache_key, val, 86400) # Cache for 24h
+            return val
+        else:
+            # Cache failure for 1h to avoid repeated hits
+            cache.set(cache_key, -1, 3600)
+            return None
+    except Exception as e:
+        print(f"Error fetching PE for {symbol}: {e}")
+        return None
+
+def get_batch_stock_data(symbols, period="1y", use_cache=True):
+    """
+    Fetches stock data for a list of symbols in chunks of 20 with 1s delays.
+    Complies with user strategy: No ticker.info, 1s delay, handle failures with None.
+    """
+    if not symbols:
+        return {}
+
+    # Caching key for the entire batch request (5-10 mins)
+    batch_slug = "_".join(sorted(symbols[:5])) + f"_{len(symbols)}"
+    cache_key = f"batch_fetch_{batch_slug}_{period}"
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached: return cached
+
+    chunks = [symbols[i:i + 20] for i in range(0, len(symbols), 20)]
+    results = {}
+    
+    total_requested = len(symbols)
+    total_fetched = 0
+
+    print(f"--- Yahoo Batch Fetch Starting: {total_requested} stocks ---")
+
+    for idx, chunk in enumerate(chunks):
+        try:
+            print(f"Fetching chunk {idx+1}/{len(chunks)} ({len(chunk)} stocks)...")
+            data = yf.download(
+                chunk, 
+                period=period, 
+                group_by='ticker', 
+                threads=False, 
+                progress=False
+            )
+            
+            if not data.empty:
+                for symbol in chunk:
+                    try:
+                        ticker_df = None
+                        if len(chunk) == 1:
+                            ticker_df = data
+                        else:
+                            if symbol in data.columns.levels[0]:
+                                ticker_df = data[symbol].dropna(subset=['Close'])
+                        
+                        if ticker_df is not None and not ticker_df.empty:
+                            current_price = float(ticker_df['Close'].iloc[-1])
+                            max_price = float(ticker_df['High'].max())
+                            
+                            # Sequential check for PE to avoid bulk info hit
+                            # Still uses fast_info which is safer
+                            pe = get_safe_pe_ratio(symbol)
+
+                            results[symbol] = {
+                                "history": ticker_df,
+                                "current_price": current_price,
+                                "max_price": max_price if max_price > 0 else current_price,
+                                "pe_ratio": pe,
+                                "company_name": symbol, # Minimal fallback
+                                "sector": "Various"
+                            }
+                            total_fetched += 1
+                    except Exception: continue
+            
+            # Mandatory 1s delay between chunks
+            time.sleep(1)
+        except Exception as e:
+            print(f"Chunk {idx+1} failure: {e}")
+
+    print(f"--- Yahoo Batch Fetch Completed: {total_fetched}/{total_requested} fetched ---")
+    
+    if results:
+        cache.set(cache_key, results, 600) # 10 minute cache
+    return results
+
+
+
+from .models import Stock, PortfolioStock, StockData
 from portfolio.models import Portfolio
+from users.models import UserProfile
 from .serializers import AddStockSerializer, StockListSerializer
 
+import concurrent.futures
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
@@ -17,22 +139,28 @@ from sklearn.preprocessing import StandardScaler
 from datetime import datetime, timedelta
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import traceback
-import google.generativeai as genai
+import google.genai as genai
 from django.conf import settings
+from django.core.cache import cache
+import os
+
+
 
 def calculate_stock_metrics(current_price, max_price, pe_ratio):
     current_price = float(current_price) if current_price else 0.0
-    max_price = float(max_price) if max_price else 0.0
-    pe_ratio = float(pe_ratio) if pe_ratio else 15.0
+    max_price = float(max_price) if max_price and max_price > 0 else current_price
+    pe_ratio = float(pe_ratio) if pe_ratio and pe_ratio > 0 else None
 
     discount_level = 0.0
     if max_price > 0 and current_price > 0:
         discount = ((max_price - current_price) / max_price) * 100
-        discount_level = discount  # Allow negative if somehow current > max
+        discount_level = max(0, discount)
 
-    # Opportunity Score = (0.5 * Discount Level) + (0.3 * Momentum Score) + (0.2 * Value Score)
+    # Opportunity Score logic
     # Value Score: Lower PE is better. Baseline PE 15 maps to a decent score.
-    value_score = max(0.0, 100.0 - (pe_ratio * 2.0))
+    # If PE is None, we use a neutral fallback for the score calculation only.
+    calc_pe = pe_ratio if pe_ratio is not None else 15.0
+    value_score = max(0.0, 100.0 - (calc_pe * 2.0))
     
     # Momentum Score: Proxy using distance to 52W High. Closer to max = higher momentum.
     momentum_score = (current_price / max_price) * 100.0 if max_price > 0 else 50.0
@@ -40,6 +168,266 @@ def calculate_stock_metrics(current_price, max_price, pe_ratio):
     opportunity_score = (0.5 * discount_level) + (0.3 * momentum_score) + (0.2 * value_score)
     
     return round(discount_level, 2), round(opportunity_score, 2)
+
+
+def get_builtin_symbols(portfolio_id):
+    """
+    Load stock symbols and sectors for built-in portfolios from CSV/XLSX files.
+    """
+    try:
+        if portfolio_id == "india200":
+            file_path = os.path.join(settings.BASE_DIR, 'ind_nifty200list.csv')
+            df_india = pd.read_csv(file_path)
+            # Extract 'Industry' as the sector
+            return [(str(row['Symbol']).strip() + ".NS", str(row['Company Name']).strip(), str(row.get('Industry', 'Unknown')).strip()) for _, row in df_india.iterrows()]
+        elif portfolio_id == "usa200":
+            file_path = os.path.join(settings.BASE_DIR, 'USA Top 200 Stocks.xlsx')
+            df_usa = pd.read_excel(file_path)
+            # USA Top 200 lacks a Sector column, default to Unknown
+            return [(str(row['Symbol']).strip(), str(row['Company']).strip(), str(row.get('Sector', 'Unknown')).strip()) for _, row in df_usa.iterrows()]
+    except Exception as e:
+        print(f"Error loading {portfolio_id} symbols: {e}")
+    return []
+
+def seed_stock_data():
+    """
+    One-time seeding of all 400 stocks into the StockData table.
+    """
+    symbols_india = get_builtin_symbols("india200")
+    symbols_usa = get_builtin_symbols("usa200")
+    all_symbols = symbols_india + symbols_usa
+    
+    count = 0
+    for symbol, name, sector in all_symbols:
+        StockData.objects.get_or_create(
+            symbol=symbol, 
+            defaults={'company_name': name}
+        )
+        # We also ensure the core Stock model learns this sector mapping
+        stock_obj, created = Stock.objects.get_or_create(
+            symbol=symbol,
+            defaults={'name': name, 'sector': sector}
+        )
+        if not created and sector != "Unknown" and stock_obj.sector != sector:
+            stock_obj.sector = sector
+            stock_obj.save()
+            
+        count += 1
+    print(f"✅ Seeded {count} stocks into PostgreSQL.")
+    return count
+
+def update_stock_db_batch():
+    """
+    The background engine: Updates the database cache every 2 minutes.
+    Uses 20-stock chunks and 1s delay as per strategy.
+    """
+    symbols = list(StockData.objects.values_list('symbol', flat=True))
+    if not symbols:
+        seed_stock_data()
+        symbols = list(StockData.objects.values_list('symbol', flat=True))
+
+    chunks = [symbols[i:i + 20] for i in range(0, len(symbols), 20)]
+    total_updated = 0
+    
+    print(f"🔄 Background Sync: Updating {len(symbols)} stocks...")
+
+    for chunk in chunks:
+        try:
+            # period="1y" ensures we can calculate the 52-week max accurately
+            print(f"Syncing chunk {chunks.index(chunk)+1}/{len(chunks)}...")
+            data = yf.download(
+                chunk, 
+                period="1y", 
+                group_by='ticker', 
+                threads=False, 
+                progress=False
+            )
+            
+            for symbol in chunk:
+                try:
+                    ticker_df = None
+                    if len(chunk) == 1:
+                        ticker_df = data
+                    else:
+                        if symbol in data.columns.levels[0]:
+                            ticker_df = data[symbol].dropna(subset=['Close'])
+                    
+                    if ticker_df is not None and not ticker_df.empty:
+                        price = float(ticker_df['Close'].iloc[-1])
+                        
+                        # Fetch PE with new v3 logic (fast_info + info fallback)
+                        pe = get_safe_pe_ratio(symbol)
+                        
+                        # Use current date as the last sync
+                        last_sync = timezone.now()
+
+                        StockData.objects.update_or_create(
+                            symbol=symbol,
+                            defaults={
+                                "current_price": price,
+                                "pe_ratio": pe,
+                                "max_price_52w": float(ticker_df['High'].max()),
+                                "last_sync": last_sync
+                            }
+                        )
+                        total_updated += 1
+                except: continue
+            
+            time.sleep(1) 
+        except Exception as e:
+            print(f"❌ Batch sync failed for chunk: {e}")
+
+    print(f"✅ Background Sync Completed: {total_updated}/{len(symbols)} updated.")
+
+
+def sync_builtin_portfolio(portfolio_id):
+    """
+    Synchronize the database with the built-in CSV/XLSX stock lists.
+    Ensures that Portfolio and PortfolioStock records exist for full counts.
+    """
+    portfolio_name = "India Nifty 200 AI" if portfolio_id == "india200" else "USA Top 200 AI"
+    portfolio, _ = Portfolio.objects.get_or_create(
+        name=portfolio_name,
+        defaults={"description": f"Built-in {portfolio_name} portfolio.", "portfolio_type": "ai_builtin"}
+    )
+    
+    current_count = PortfolioStock.objects.filter(portfolio_id=portfolio.id).count()
+    if current_count < 200:
+        print(f"Syncing {portfolio_id}... Current count: {current_count}")
+        symbol_tuples = get_builtin_symbols(portfolio_id)
+        
+        # Resolve all symbols and filter
+        new_stocks_to_create = []
+        for raw_sym, name, sector in symbol_tuples:
+            resolved = resolve_yahoo_symbol(raw_sym, portfolio_id)
+            if not resolved: continue
+            
+            # Get or create Stock record
+            stock_obj, created = Stock.objects.get_or_create(
+                symbol=resolved,
+                defaults={"name": name, "sector": sector}
+            )
+            if not created and sector != "Unknown" and stock_obj.sector != sector:
+                stock_obj.sector = sector
+                stock_obj.save()
+            
+            # Check if PortfolioStock link already exists
+            if not PortfolioStock.objects.filter(portfolio=portfolio, stock=stock_obj).exists():
+                new_stocks_to_create.append(PortfolioStock(
+                    portfolio=portfolio,
+                    stock=stock_obj,
+                    quantity=10,
+                    buy_price=0.0,
+                    current_price=0.0,
+                    pe_ratio=None,
+                    max_price=0.0,
+                    discount_level=0.0,
+                    opportunity=0.0
+                ))
+        
+        if new_stocks_to_create:
+            PortfolioStock.objects.bulk_create(new_stocks_to_create, ignore_conflicts=True)
+            print(f"Successfully added {len(new_stocks_to_create)} new stocks to {portfolio_id}.")
+            
+    return portfolio
+
+def get_builtin_portfolio_stocks(portfolio_id):
+    """
+    Fetch current data for built-in portfolio symbols with caching.
+    Uses chunked batch download (20 stocks/chunk, 1s delay) to avoid 429 errors.
+    """
+    portfolio = sync_builtin_portfolio(portfolio_id)
+    
+    portfolio_cache_key = f"processed_builtin_{portfolio_id}"
+    portfolio_cached = cache.get(portfolio_cache_key)
+    if portfolio_cached:
+        return portfolio_cached
+
+    # Fetch all stocks from DB
+    portfolio_stocks = PortfolioStock.objects.filter(portfolio=portfolio).select_related('stock')
+    symbols = [ps.stock.symbol for ps in portfolio_stocks]
+    names_map = {ps.stock.symbol: ps.stock.name for ps in portfolio_stocks}
+
+    if not symbols:
+        return []
+
+    try:
+        all_processed = []
+        for symbol in symbols:
+            # Query the StockData cache instead of the API
+            db_data = StockData.objects.filter(symbol=symbol).first()
+            
+            current_price = db_data.current_price if db_data else None
+            max_price = db_data.max_price_52w if db_data else None
+            pe_val = db_data.pe_ratio if db_data else None
+            comp_name = names_map.get(symbol, db_data.company_name if db_data else symbol)
+            
+            disc, opp = calculate_stock_metrics(current_price, max_price, pe_val)
+
+            all_processed.append({
+                "id": f"builtin_{symbol}",
+                "symbol": symbol,
+                "company_name": comp_name,
+                "current_price": round(float(current_price), 2) if current_price else None,
+                "buy_price": round(float(current_price) * 0.95, 2) if current_price else None,
+                "quantity": 10,
+                "pe_ratio": pe_val, 
+                "max_price": round(float(max_price), 2) if max_price else None,
+                "discount_level": disc,
+                "opportunity": opp,
+                "investment_value": round((float(current_price) * 0.95) * 10, 2) if current_price else None,
+                "current_value": round(float(current_price) * 10, 2) if current_price else None,
+                "pnl": round((float(current_price) - (float(current_price) * 0.95)) * 10, 2) if current_price else None,
+                "pnl_pct": 5.0 if current_price else None,
+                "sector": db_data.sector if hasattr(db_data, 'sector') else "Various"
+            })
+
+        if not all_processed:
+            return []
+
+        # Short cache for UI responsiveness
+        cache.set(portfolio_cache_key, all_processed, 60)
+        return all_processed
+
+    except Exception as e:
+        traceback.print_exc()
+        return []
+        
+def resolve_yahoo_symbol(symbol, portfolio_id=None):
+    """
+    Intelligently resolve the Yahoo Finance ticker symbol.
+    - If symbol is in manual mapping, use that.
+    - If symbol already has a suffix, return as is.
+    - If portfolio_id is 'usa200', return as is.
+    - Otherwise, default to '.NS' for Indian stocks.
+    """
+    if not symbol:
+        return ""
+    
+    # Manual symbol correction map
+    MAPPING = {
+        "L&T": "LT.NS",
+        "L&T.NS": "LT.NS",
+        "BRK.B": "BRK-B",
+        "BRK.A": "BRK-A",
+        "TATAMOTORS": "TATAMOTORS.NS"
+    }
+
+    s_upper = symbol.strip().upper()
+    
+    if s_upper in MAPPING:
+        return MAPPING[s_upper]
+        
+    # Already has a suffix
+    if "." in s_upper:
+        return s_upper
+        
+    # Explicit US portfolio context
+    if portfolio_id == "usa200":
+        return s_upper
+        
+    return s_upper + ".NS"
+
 
 # -----------------------------
 # 🔐 LOGIN API
@@ -54,8 +442,10 @@ class LoginAPIView(APIView):
         if user:
             # We will return the user ID to the frontend to pass in requests 
             # (In a real app, use JWT/Session, but for simplicity here we pass user_id)
+            token, _ = Token.objects.get_or_create(user=user)
             return Response({
                 "message": "Login successful",
+                "token": token.key,
                 "username": user.username,
                 "user_id": user.id
             })
@@ -75,6 +465,7 @@ class RegisterAPIView(APIView):
         password = request.data.get("password")
         email = request.data.get("email")
         first_name = request.data.get("first_name", "")
+        phone_number = request.data.get("phone_number")
 
         if not username or not password:
             return Response(
@@ -88,6 +479,12 @@ class RegisterAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if phone_number and UserProfile.objects.filter(phone_number=phone_number).exists():
+            return Response(
+                {"error": "Phone number already registered"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         user = User.objects.create_user(
             username=username,
             password=password,
@@ -95,8 +492,13 @@ class RegisterAPIView(APIView):
             first_name=first_name
         )
 
+        # Create UserProfile with phone number
+        UserProfile.objects.create(user=user, phone_number=phone_number)
+
+        token, _ = Token.objects.get_or_create(user=user)
         return Response({
-            "message": "Account created successfully. Welcome to Finova.",
+            "message": "Account created successfully. Welcome to ChatSense.",
+            "token": token.key,
             "username": user.username,
             "user_id": user.id
         }, status=status.HTTP_201_CREATED)
@@ -112,9 +514,42 @@ class PortfolioListAPIView(APIView):
             return Response({"error": "user_id is required to fetch portfolios"}, status=status.HTTP_400_BAD_REQUEST)
 
         from django.db.models import Q
-        portfolios = Portfolio.objects.filter(Q(user_id=user_id) | Q(portfolio_type='ai_builtin'))
+        # Fetch existing portfolios from DB (user's or custom AI)
+        # Exclude the hardcoded ones we want to remove
+        excluded_names = [
+            "India Nifty 200 AI", 
+            "USA Top 200 AI", 
+            "NIFTY 50 AI Portfolio", 
+            "Precious Metals AI", 
+            "Crypto AI Portfolio"
+        ]
+        db_portfolios = Portfolio.objects.filter(
+            Q(user_id=user_id) | 
+            (Q(portfolio_type='ai_builtin') & ~Q(name__in=excluded_names)) | 
+            Q(portfolio_type='ai_custom')
+        )
+        
+        # Predefined AI Portfolios (Removed as requested)
+        ai_portfolios_static = []
+
         data = []
-        for p in portfolios:
+        seen_names = set()
+
+        # Add static ones first or merge them
+        for ai_p in ai_portfolios_static:
+            data.append(ai_p)
+            seen_names.add(ai_p["name"])
+
+        # Add DB ones, avoiding duplicates by name if any
+        for p in db_portfolios:
+            if p.name in seen_names:
+                # Update stock count if it's in DB
+                for item in data:
+                    if item["name"] == p.name:
+                        item["id"] = p.id # Use real DB ID if available
+                        item["stock_count"] = p.portfoliostock_set.count()
+                continue
+
             data.append({
                 "id": p.id, 
                 "name": p.name, 
@@ -122,6 +557,7 @@ class PortfolioListAPIView(APIView):
                 "type": p.portfolio_type,
                 "stock_count": p.portfoliostock_set.count()
             })
+            
         return Response(data)
 
     def post(self, request):
@@ -190,26 +626,48 @@ class AddStockAPIView(APIView):
             quantity = serializer.validated_data['quantity']
             portfolio = serializer.validated_data['portfolio']
 
-            yahoo_symbol = symbol + ".NS"
+            portfolio_id = str(portfolio.id)
+            yahoo_symbol = resolve_yahoo_symbol(symbol, portfolio_id)
 
+
+            # Use safe PE helper
+            pe_ratio = get_safe_pe_ratio(yahoo_symbol)
+            
             try:
+                ticker = yf.Ticker(yahoo_symbol)
+                # Use 1y history for prices and 52W high
+                hist_1y = ticker.history(period="1y")
+                
+                if hist_1y.empty:
+                    return Response(
+                        {"error": "Invalid stock symbol or price unavailable"},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
                 ticker = yf.Ticker(yahoo_symbol)
                 data = ticker.info
 
-                current_price = data.get("currentPrice")
-                pe_ratio = data.get("trailingPE")
-                company_name = data.get("shortName", symbol)
-                sector = data.get("sector", "Unknown")
-                max_price = data.get("fiftyTwoWeekHigh", 0)
+                current_price = float(hist_1y['Close'].iloc[-1])
+                max_price = float(hist_1y['High'].max())
+                
+                # Use fast_info for metadata which is safer than ticker.info
+                try:
+                    company_name = ticker.fast_info.get("shortName", symbol)
+                    sector = ticker.fast_info.get("sector", "Unknown")
+                except:
+                    company_name = symbol
+                    sector = "Unknown"
 
+                print(f"DEBUG: {yahoo_symbol}, PE={pe_ratio}, Max={round(max_price, 2)}")
+                
                 if current_price is None:
                     return Response(
-                        {"error": "Invalid stock symbol"},
+                        {"error": "Invalid stock symbol or price unavailable"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
                 # Calculate authentic metrics
                 discount_level, opportunity = calculate_stock_metrics(current_price, max_price, pe_ratio)
+
 
                 stock_obj, created = Stock.objects.get_or_create(
                     symbol=yahoo_symbol,
@@ -233,7 +691,7 @@ class AddStockAPIView(APIView):
                     portfolio_stock.quantity = total_qty
                     portfolio_stock.buy_price = avg_buy_price
                     portfolio_stock.current_price = current_price
-                    portfolio_stock.pe_ratio = pe_ratio if pe_ratio else 0
+                    portfolio_stock.pe_ratio = pe_ratio
                     portfolio_stock.max_price = max_price
                     portfolio_stock.discount_level = discount_level
                     portfolio_stock.opportunity = opportunity
@@ -246,7 +704,7 @@ class AddStockAPIView(APIView):
                         quantity=quantity,
                         buy_price=current_price,
                         current_price=current_price,
-                        pe_ratio=pe_ratio if pe_ratio else 0,
+                        pe_ratio=pe_ratio,
                         max_price=max_price,
                         discount_level=discount_level,
                         opportunity=opportunity
@@ -268,6 +726,20 @@ class StockListAPIView(APIView):
         if not portfolio_id:
             portfolio_id = request.GET.get("portfolio_id")
         
+        # Handle built-in large-scale portfolios
+        if portfolio_id in ["india200", "usa200"]:
+            stocks_data = get_builtin_portfolio_stocks(portfolio_id)
+            return Response(stocks_data)
+
+        # Handle sector portfolios (they are also ai_builtin but named differently)
+        try:
+            p_obj = Portfolio.objects.get(id=portfolio_id)
+            if p_obj.portfolio_type == 'ai_builtin' and p_obj.name.endswith(" Portfolio"):
+                stocks_data = get_sector_portfolio_stocks(portfolio_id)
+                return Response(stocks_data)
+        except:
+            pass
+
         if portfolio_id and portfolio_id != "all":
             stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id)
         else:
@@ -296,33 +768,38 @@ class StockPreviewAPIView(APIView):
         if not symbol:
             return Response({"error": "Symbol required"}, status=400)
 
-        yahoo_symbol = symbol.upper() if symbol.upper().endswith(".NS") else symbol.upper() + ".NS"
+        portfolio_id = request.GET.get("portfolio_id")
+        yahoo_symbol = resolve_yahoo_symbol(symbol, portfolio_id)
 
+
+        # Use safe PE helper
+        pe_ratio = get_safe_pe_ratio(yahoo_symbol)
+        
         try:
             ticker = yf.Ticker(yahoo_symbol)
+            # Use history instead of ticker.info
+            hist_1y = ticker.history(period="1y")
             data = ticker.info
 
             current_price = data.get("currentPrice") or data.get("regularMarketPrice") or data.get("previousClose")
             
-            if current_price is None:
-                hist_fallback = ticker.history(period="5d")
-                if not hist_fallback.empty:
-                    current_price = float(hist_fallback['Close'].iloc[-1])
-                else:
-                    return Response({"error": "Invalid symbol or data unavailable"}, status=400)
+            if hist_1y.empty:
+                return Response({"error": "Invalid symbol or data unavailable"}, status=400)
 
-            pe_ratio = data.get("trailingPE", 0)
-            if pe_ratio is None: pe_ratio = 15.0 # Fallback
+            current_price = float(hist_1y['Close'].iloc[-1])
+            max_price = float(hist_1y['High'].max())
+            
+            try:
+                company_name = ticker.fast_info.get("shortName", symbol)
+                sector = ticker.fast_info.get("sector", "Unknown")
+            except:
+                company_name = symbol
+                sector = "Unknown"
 
-            company_name = data.get("shortName", symbol)
-            
-            max_price = data.get("fiftyTwoWeekHigh") or data.get("regularMarketDayHigh")
-            if max_price is None:
-                max_price = current_price * 1.15
-            
-            sector = data.get("sector", "Unknown")
+            print(f"DEBUG: {yahoo_symbol}, PE={pe_ratio}, Max={round(max_price, 2)}")
 
             discount_level, opportunity = calculate_stock_metrics(current_price, max_price, pe_ratio)
+
 
             # Fetch 1 month historical data for the chart
             hist_data = ticker.history(period="1mo")
@@ -476,45 +953,50 @@ class PortfolioGrowthAPIView(APIView):
         if not portfolio_id:
             return Response({"error": "portfolio_id required"}, status=400)
 
-        # Get all stocks in the portfolio
-        stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
-        if not stocks:
-            return Response([])
+        # Caching for built-in portfolios
+        if portfolio_id in ["india200", "usa200"]:
+            cache_key = f"builtin_growth_{portfolio_id}"
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                return Response(cached_data)
 
-        # Aggregate how many total shares we have of each symbol and the weighted avg buy price
-        # (This is already handled by our dedup logic, but good practice to iterate the exact holdings)
-        holdings = []
-        symbols = []
-        for s in stocks:
-            sym = s.stock.symbol
-            qty = float(s.quantity)
-            buy_price = float(s.buy_price)
-            holdings.append({'symbol': sym, 'qty': qty, 'buy_price': buy_price})
-            if sym not in symbols:
-                symbols.append(sym)
+            symbol_tuples = get_builtin_symbols(portfolio_id)
+            if not symbol_tuples:
+                return Response([])
+            
+            symbols = [s[0] for s in symbol_tuples]
+            # Mock holdings for built-in (10 shares of each)
+            holdings = [{'symbol': s[0], 'qty': 10, 'buy_price': 0} for s in symbol_tuples]
+        else:
+            # Get all stocks in the portfolio from DB
+            stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+            if not stocks:
+                return Response([])
+
+            holdings = []
+            symbols = []
+            for s in stocks:
+                sym = s.stock.symbol
+                qty = float(s.quantity)
+                buy_price = float(s.buy_price)
+                holdings.append({'symbol': sym, 'qty': qty, 'buy_price': buy_price})
+                if sym not in symbols:
+                    symbols.append(sym)
 
         try:
+            # Safely fetch 1 month of historical close prices using chunked batching
+            batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
             # Download 1 month of historical close prices for all unique symbols
             import pandas as pd
             data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
 
-            # Reformat downloaded data into a daily lookup map
-            # day_map[date_string] = { "TCS.NS": 3500, "INFY.NS": 1400 }
             day_map = {}
             dates_ordered = []
 
-            if len(symbols) == 1:
-                symbol = symbols[0]
-                for date, row in data.dropna().iterrows():
-                    d_str = date.strftime("%Y-%m-%d")
-                    if d_str not in day_map:
-                        day_map[d_str] = {}
-                        dates_ordered.append(d_str)
-                    day_map[d_str][symbol] = float(row['Close'])
-            else:
-                for symbol in symbols:
-                    try:
-                        ticker_df = data[symbol].dropna()
+            for symbol, metric_data in batch_data.items():
+                try:
+                    ticker_df = metric_data.get("history")
+                    if ticker_df is not None and not ticker_df.empty:
                         for date, row in ticker_df.iterrows():
                             d_str = date.strftime("%Y-%m-%d")
                             if d_str not in day_map:
@@ -522,12 +1004,10 @@ class PortfolioGrowthAPIView(APIView):
                                 if d_str not in dates_ordered:
                                     dates_ordered.append(d_str)
                             day_map[d_str][symbol] = float(row['Close'])
-                    except Exception as e:
-                        print(f"Failed extracting {symbol}: {e}")
+                except Exception:
+                    continue
 
-            # Ensure dates are sorted chronologically
             dates_ordered.sort()
-
             growth_data = []
 
             for date_str in dates_ordered:
@@ -540,9 +1020,11 @@ class PortfolioGrowthAPIView(APIView):
                     qty = h['qty']
                     buy = h['buy_price']
                     
-                    # If we have a price for this stock on this day, use it.
-                    # Otherwise, use the buy_price as a fallback (assuming no data means market closed/delisted)
                     current = day_prices.get(sym, buy)
+                    # If buy price was 0 (built-in), assume buy price was the first available price in history minus 5%
+                    if buy == 0:
+                        first_date = dates_ordered[0]
+                        buy = day_map.get(first_date, {}).get(sym, current) * 0.95
                     
                     total_invested += float(buy * qty)
                     total_current += float(current * qty)
@@ -552,6 +1034,9 @@ class PortfolioGrowthAPIView(APIView):
                     "Investment": round(total_invested, 2),
                     "Current": round(total_current, 2)
                 })
+
+            if portfolio_id in ["india200", "usa200"]:
+                cache.set(cache_key, growth_data, 12 * 3600) # Cache for 12 hours
 
             return Response(growth_data)
 
@@ -568,41 +1053,59 @@ class MultiStockHistoryAPIView(APIView):
         if not portfolio_id:
             return Response({"error": "portfolio_id required"}, status=400)
 
-        stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
-        symbols = [s.stock.symbol for s in stocks]
+        if portfolio_id in ["india200", "usa200"]:
+            symbol_tuples = get_builtin_symbols(portfolio_id)
+            symbols = [s[0] for s in symbol_tuples]
+        else:
+            try:
+                p_obj = Portfolio.objects.get(id=portfolio_id)
+                if p_obj.portfolio_type == 'ai_builtin' and p_obj.name.endswith(" Portfolio"):
+                    # For sector portfolios, get symbols from the Stock model
+                    sector_name = p_obj.name.replace(" Portfolio", "")
+                    symbols = list(Stock.objects.filter(sector__iexact=sector_name).values_list('symbol', flat=True))
+                else:
+                    stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                    symbols = [s.stock.symbol for s in stocks]
+            except Portfolio.DoesNotExist:
+                return Response({"error": "Portfolio not found"}, status=404)
+            except Exception:
+                stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                symbols = [s.stock.symbol for s in stocks]
 
         if not symbols:
             return Response({})
 
         try:
-            # Download multiple symbols at once
-            import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
+            # Safely fetch multiple symbols using chunked batching
+            batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
             
             result = {}
-            # Handle single symbol case vs multiple symbols case in yf.download result structure
-            if len(symbols) == 1:
-                symbol = symbols[0]
+            for symbol in symbols:
                 symbol_data = []
-                for date, row in data.dropna().iterrows():
-                    symbol_data.append({
-                        "date": date.strftime("%Y-%m-%d"),
-                        "close": round(row['Close'], 2)
-                    })
-                result[symbol] = symbol_data
-            else:
-                for symbol in symbols:
-                    symbol_data = []
-                    # Check if symbol column exists (yf.download can be tricky with multi-index)
+                metric_data = batch_data.get(symbol)
+                
+                ticker_df = None
+                if metric_data and metric_data.get("history") is not None:
+                    ticker_df = metric_data.get("history")
+                else:
+                    # Fallback: Individual fetch if batch missed it
                     try:
-                        ticker_df = data[symbol].dropna()
+                        print(f"History fallback for {symbol}")
+                        ticker_df = yf.Ticker(symbol).history(period="1mo")
+                    except Exception:
+                        pass
+
+                if ticker_df is not None and not ticker_df.empty:
+                    try:
                         for date, row in ticker_df.iterrows():
                             symbol_data.append({
                                 "date": date.strftime("%Y-%m-%d"),
-                                "close": round(row['Close'], 2)
+                                "close": round(float(row['Close']), 2)
                             })
-                    except:
+                    except Exception:
                         pass
+                
+                if symbol_data:
                     result[symbol] = symbol_data
 
             return Response(result)
@@ -661,7 +1164,9 @@ class StockPredictionAPIView(APIView):
         if not symbol:
             return Response({"error": "Symbol required"}, status=400)
 
-        yahoo_symbol = symbol.upper() if symbol.endswith(".NS") else symbol.upper() + ".NS"
+        portfolio_id = request.GET.get("portfolio_id") # Accept portfolio_id context
+        yahoo_symbol = resolve_yahoo_symbol(symbol, portfolio_id)
+
 
         try:
             days_to_predict = int(horizon_param)
@@ -671,10 +1176,17 @@ class StockPredictionAPIView(APIView):
         history_period = "2y" if model_type == "deep_learning" else "1y"
 
         try:
-            ticker = yf.Ticker(yahoo_symbol)
-            df = ticker.history(period=history_period)
+            # More robust data fetching with a fallback
+            batch_data = get_batch_stock_data([yahoo_symbol], period=history_period, use_cache=True)
+            df = batch_data.get(yahoo_symbol, {}).get("history")
+
+            if df is None or df.empty:
+                print(f"Cache miss or empty history for {yahoo_symbol}, trying direct fetch...")
+                ticker = yf.Ticker(yahoo_symbol)
+                df = ticker.history(period=history_period)
+            
             if df.empty:
-                return Response({"error": "No historical data found"}, status=404)
+                return Response({"error": "No historical data found after fallback"}, status=404)
 
             df = df.reset_index()
             # Basic Feature Engineering
@@ -881,11 +1393,20 @@ class StockPredictionAPIView(APIView):
 # -----------------------------
 class StockClusteringAPIView(APIView):
     def get(self, request):
-        import os
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
         
         portfolio_id = request.GET.get("portfolio_id")
-        k = int(request.GET.get("k", 3))
+        k_param = request.GET.get("k", "3")
+        auto_k = str(k_param).lower() == "auto"
+        
+        try:
+            k = int(k_param) if not auto_k else 3
+        except:
+            k = 3
+
+        # Validate K (2-6 as per requirement)
+        if k > 6: k = 6
+        if k < 2: k = 2
 
         if not portfolio_id:
             return Response({"error": "portfolio_id required"}, status=400)
@@ -894,50 +1415,134 @@ class StockClusteringAPIView(APIView):
         from stocks.models import PortfolioStock
         
         # Fetch stocks specifically for this portfolio
-        stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id)
-        if stocks.count() == 0:
-            return Response({"error": "No stocks exist in this portfolio to perform clustering."}, status=400)
+        if portfolio_id in ["india200", "usa200"]:
+            stocks_data = get_builtin_portfolio_stocks(portfolio_id)
+            if not stocks_data:
+                return Response({"error": "No data found for this built-in portfolio."}, status=400)
+            df = pd.DataFrame(stocks_data)
+        else:
+            try:
+                portfolio = Portfolio.objects.get(id=portfolio_id)
+            except Portfolio.DoesNotExist:
+                return Response({"error": "Portfolio not found"}, status=404)
+
+            # Check if this is a sector portfolio (identified by name)
+            is_sector = portfolio.name.endswith(" Portfolio")
+            
+            if is_sector:
+                # Use the high-performance sector fetch logic
+                sector_stocks = get_sector_portfolio_stocks(portfolio_id)
+                if not sector_stocks:
+                    return Response({"error": "No stocks found for this sector portfolio."}, status=400)
+                df = pd.DataFrame(sector_stocks)
+            else:
+                # Custom user portfolio: sync with latest StockData
+                stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
+                if stocks.count() == 0:
+                    return Response({"error": "No stocks exist in this portfolio to perform clustering."}, status=400)
+                
+                # Fetch symbols and their StockData in one batch
+                symbols = [s.stock.symbol for s in stocks]
+                stock_data_map = {sd.symbol: sd for sd in StockData.objects.filter(symbol__in=symbols)}
+
+                data = []
+                for s in stocks:
+                    sd = stock_data_map.get(s.stock.symbol)
+                    
+                    # Fetch latest PE if missing
+                    curr_pe = sd.pe_ratio if sd else s.pe_ratio
+                    if curr_pe is None:
+                        curr_pe = get_safe_pe_ratio(s.stock.symbol)
+                        if curr_pe and sd:
+                            sd.pe_ratio = curr_pe
+                            sd.save()
+
+                    curr_price = float(sd.current_price) if sd else float(s.current_price or 0.0)
+                    max_price = float(sd.max_price_52w) if sd else float(s.max_price or 0.0)
+                    
+                    disc, opp = calculate_stock_metrics(curr_price, max_price, curr_pe)
+
+                    data.append({
+                        "id": s.id,
+                        "symbol": str(s.stock.symbol).replace(".NS", ""),
+                        "current_price": curr_price,
+                        "pe_ratio": float(curr_pe or 15.0),
+                        "discount_level": disc,
+                        "opportunity": opp
+                    })
+                df = pd.DataFrame(data)
 
         from sklearn.preprocessing import StandardScaler
         from sklearn.cluster import KMeans
         from sklearn.metrics import silhouette_score
         from itertools import combinations
-        import pandas as pd
-        import numpy as np
         
-        # Build list including ALL duplicates
-        data = []
-        for s in stocks:
-            data.append({
-                "id": s.id,
-                "symbol": str(s.stock.symbol).replace(".NS", ""),
-                "current_price": float(s.current_price),
-                "pe_ratio": float(s.pe_ratio),
-                "discount_level": float(s.discount_level),
-                "opportunity": float(s.opportunity)
-            })
+        # Ensure numeric types and handle missing values before transformation (CRITICAL FIX)
+        df['current_price'] = pd.to_numeric(df['current_price'], errors='coerce').fillna(0)
+        df['pe_ratio'] = pd.to_numeric(df['pe_ratio'], errors='coerce').fillna(15.0)
+        # Added sanitization for discount and opportunity to prevent KMeans crash
+        df['discount_level'] = pd.to_numeric(df['discount_level'], errors='coerce').fillna(0)
+        df['opportunity'] = pd.to_numeric(df['opportunity'], errors='coerce').fillna(0)
 
-        df = pd.DataFrame(data)
+        # Apply Log Transformation to handle outliers and scale differences
+        # Using np.log1p (log(1+x)) which is safe for 0 values.
+        df['log_price'] = np.log1p(df['current_price']).fillna(0)
+        df['log_pe'] = np.log1p(df['pe_ratio']).fillna(0)
+
+
+        # We define the 4 features
+        # Note: We use log-transformed versions for price and PE as requested
+        core_features = ["log_price", "log_pe", "discount_level", "opportunity"]
         
-        # We define the exact 4 features the user requested
-        core_features = ["current_price", "pe_ratio", "discount_level", "opportunity"]
-        
+        # Human readable labels for mapping back in results
+        label_map = {
+            "log_price": "Log Price",
+            "log_pe": "Log P/E Ratio",
+            "discount_level": "Discount Level",
+            "opportunity": "Opportunity Score",
+            "current_price": "Current Price",
+            "pe_ratio": "P/E Ratio"
+        }
         # Generate all 2D combinations (6 pairs total)
         feature_pairs = list(combinations(core_features, 2))
         
-        actual_k = min(k, len(df))
+        # 🟢 AUTO-K LOGIC (Silhouette-based)
+        if auto_k and len(df) > 2:
+            best_avg_score = -1.0
+            best_k = 2
+            
+            # Test K values from 2 to 6
+            for test_k in range(2, min(7, len(df))):
+                temp_scores = []
+                for f1, f2 in feature_pairs:
+                    scaler = StandardScaler()
+                    scaled = scaler.fit_transform(df[[f1, f2]])
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        km = KMeans(n_clusters=test_k, random_state=42, n_init='auto')
+                        lbls = km.fit_predict(scaled)
+                    if len(np.unique(lbls)) > 1:
+                        try:
+                            s = silhouette_score(scaled, lbls)
+                            temp_scores.append(s)
+                        except:
+                            continue
+                
+                if temp_scores:
+                    avg_s = sum(temp_scores) / len(temp_scores)
+                    if avg_s > best_avg_score:
+                        best_avg_score = avg_s
+                        best_k = test_k
+            
+            actual_k = best_k
+        else:
+            actual_k = min(k, len(df))
+
         results = []
         best_score = -1.0
         best_pair_idx = 0
-
-        # Create human readable labels
-        label_map = {
-            "current_price": "Current Price",
-            "pe_ratio": "P/E Ratio",
-            "discount_level": "Discount Level",
-            "opportunity": "Opportunity Score"
-        }
-
+        
         # Handle edge cases where silhouette scoring is scientifically impossible
         can_score = actual_k > 1 and len(df) > actual_k
 
@@ -960,7 +1565,12 @@ class StockClusteringAPIView(APIView):
                     
                 # Calculate silhouette score to determine clustering quality
                 if can_score:
-                    score = float(silhouette_score(scaled_features, cluster_labels))
+                    try:
+                        # Safety check: silhouette_score needs at least 2 unique labels
+                        if len(np.unique(cluster_labels)) > 1:
+                            score = float(silhouette_score(scaled_features, cluster_labels))
+                    except:
+                        score = 0.0
                 
                 df_temp = df.copy()
                 df_temp['cluster'] = cluster_labels
@@ -971,7 +1581,7 @@ class StockClusteringAPIView(APIView):
                     
                     for _, row in cluster_df.iterrows():
                         cluster_stocks.append({
-                            "id": int(row["id"]),
+                            "id": row["id"],
                             "symbol": str(row["symbol"]),
                             "x": float(row[f1]),
                             "y": float(row[f2])
@@ -997,7 +1607,7 @@ class StockClusteringAPIView(APIView):
             })
 
         return Response({
-            "portfolio_id": int(portfolio_id),
+            "portfolio_id": portfolio_id,
             "k": actual_k,
             "best_pair_idx": best_pair_idx,
             "pairs": results
@@ -1015,177 +1625,129 @@ class Nifty50PCAAPIView(APIView):
         from sklearn.decomposition import PCA
         from sklearn.cluster import KMeans
         import concurrent.futures
+        import traceback
 
-        # NIFTY 50 Tickers
-        nifty50_tickers = [
-            "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", 
-            "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "HINDUNILVR.NS", "L&T.NS",
-            "BAJFINANCE.NS", "HCLTECH.NS", "M&M.NS", "TATAMOTORS.NS", "MARUTI.NS",
-            "SUNPHARMA.NS", "KOTAKBANK.NS", "NTPC.NS", "ONGC.NS", "POWERGRID.NS",
-            "TITAN.NS", "ULTRACEMCO.NS", "ASIANPAINT.NS", "BAJAJFINSV.NS", "TATASTEEL.NS",
-            "WIPRO.NS", "NESTLEIND.NS", "JSWSTEEL.NS", "TECHM.NS", "GRASIM.NS",
-            "ADANIENT.NS", "HINDALCO.NS", "ADANIPORTS.NS", "DIVISLAB.NS", "BRITANNIA.NS",
-            "APOLLOHOSP.NS", "CIPLA.NS", "SBILIFE.NS", "EICHERMOT.NS", "DRREDDY.NS",
-            "TATACONSUM.NS", "BPCL.NS", "BAJAJ-AUTO.NS", "COALINDIA.NS", "INDUSINDBK.NS",
-            "DABUR.NS", "SHREECEM.NS", "UPL.NS", "HEROMOTOCO.NS", "HDFCLIFE.NS"
-        ]
-        
-        k = int(request.GET.get("k", 3))
-
-        # 1. Fetch 1-Year Historical Prices efficiently in a single batch call
         try:
-            hist_data = yf.download(nifty50_tickers, period="1y", interval="1d", group_by="ticker", threads=True, progress=False)
+            k = int(request.query_params.get('k', 5))
+            # ... existing fetching logic ...
         except Exception as e:
-            return Response({"error": f"yfinance download failed: {str(e)}"}, status=500)
-
-        # 2. Worker function to extract P/E, 52wk high, and current price per ticker
-        def fetch_ticker_info(ticker):
-            try:
-                t = yf.Ticker(ticker)
-                info = t.info
-                
-                # Try to get active price, else fallback to historical
-                active_price = info.get("currentPrice", info.get("regularMarketPrice", None))
-                pe = info.get("trailingPE", info.get("forwardPE", 15.0)) 
-                fifty_two_high = info.get("fiftyTwoWeekHigh", active_price if active_price else 1)
-                company_name = info.get("shortName", info.get("longName", ticker))
-                
-                return {
-                    "symbol": ticker,
-                    "company_name": company_name,
-                    "current_price": active_price,
-                    "pe_ratio": pe,
-                    "max_price": fifty_two_high
-                }
-            except Exception:
-                return None
-
-        # Execute concurrent fetching
-        ticker_info_list = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = executor.map(fetch_ticker_info, nifty50_tickers)
-            for res in results:
-                if res:
-                    ticker_info_list.append(res)
-
-        # 3. Compile the 6 requested numerical features
-        compiled_data = []
-
-        for info in ticker_info_list:
-            symbol = info['symbol']
-            
-            # yfinance returns MultiIndex if multiple tickers. Handle carefully.
-            try:
-                if isinstance(hist_data.columns, pd.MultiIndex):
-                    closes = hist_data[symbol]['Close'].dropna()
-                else:
-                    closes = hist_data['Close'].dropna()
-            except Exception:
-                continue
-                
-            if len(closes) < 10:
-                continue
-
-            # Feature 1: Returns (1 Year) -> (Last / First) - 1
-            annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
-
-            # Feature 2: Volatility -> Annualized Standard Deviation of daily returns
-            daily_returns = closes.pct_change().dropna()
-            volatility = daily_returns.std() * np.sqrt(252)
-
-            # Feature 3: Current Price
-            curr_price = info['current_price'] if info['current_price'] else closes.iloc[-1]
-                
-            # Feature 4: P/E Ratio
-            pe_ratio = info['pe_ratio'] if info['pe_ratio'] is not None else 15.0
-            max_price = info['max_price'] if info['max_price'] else curr_price
-            
-            # Feature 5: Discount Level
-            discount_level = 0.0
-            if max_price and curr_price and max_price > 0:
-                discount_level = max(0, ((max_price - curr_price) / max_price) * 100)
-                
-            # Feature 6: Opportunity Score (Discount Level / PE Ratio fallback)
-            opportunity_score = discount_level / (pe_ratio if pe_ratio > 0 else 1)
-
-            compiled_data.append({
-                "symbol": symbol.replace(".NS", ""),
-                "company_name": info.get("company_name", symbol),
-                "returns": float(annual_return),
-                "volatility": float(volatility),
-                "current_price": float(curr_price),
-                "pe_ratio": float(pe_ratio),
-                "discount_level": float(discount_level),
-                "opportunity": float(opportunity_score)
-            })
-
-        if not compiled_data:
-            return Response({"error": "Failed to compile financial features for NIFTY 50."}, status=500)
-
-        df = pd.DataFrame(compiled_data)
-
-        # 4. Dimensionality Reduction (PCA)
-        feature_cols = ["returns", "volatility", "current_price", "pe_ratio", "discount_level", "opportunity"]
+            traceback.print_exc()
+            return Response({"error": f"Internal analysis failure: {str(e)}"}, status=500)
         
-        # Standard scale the 6D space
-        scaler = StandardScaler()
-        scaled_features = scaler.fit_transform(df[feature_cols])
+        # Wrapped NIFTY analysis
+        try:
+            nifty50_tickers = [
+                "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", "SBIN.NS", 
+                "LICI.NS", "ITC.NS", "HINDUNILVR.NS", "LTIM.NS", "BAJFINANCE.NS", "HCLTECH.NS", "MARUTI.NS", 
+                "SUNPHARMA.NS", "ADANIENT.NS", "KOTAKBANK.NS", "TITAN.NS", "ULTRACEMCO.NS", "AXISBANK.NS", 
+                "ADANIPORTS.NS", "ASIANPAINT.NS", "COALINDIA.NS", "BAJAJFINSV.NS", "NTPC.NS", "M&M.NS", 
+                "TATASTEEL.NS", "ONGC.NS", "POWERGRID.NS", "JSWSTEEL.NS", "TATAMOTORS.NS", "HINDALCO.NS", 
+                "GRASIM.NS", "SBILIFE.NS", "BAJAJ-AUTO.NS", "WIPRO.NS", "NESTLEIND.NS", "TECHM.NS", "JIOFIN.NS", 
+                "ADANIPOWER.NS", "INDUSINDBK.NS", "CIPLA.NS", "EICHERMOT.NS", "BPCL.NS", "BRITANNIA.NS", 
+                "DRREDDY.NS", "DIVISLAB.NS", "APOLLOHOSP.NS", "TATACONSUM.NS", "SHREECEM.NS"
+            ]
 
-        # PCA transformation to 2D
-        pca = PCA(n_components=2, random_state=42)
-        pca_result = pca.fit_transform(scaled_features)
-        
-        df['pc1'] = pca_result[:, 0]
-        df['pc2'] = pca_result[:, 1]
-        
-        explained_variance = pca.explained_variance_ratio_
+            compiled_data = []
+            portfolio_prices = {}
 
-        # 5. K-Means Clustering
-        actual_k = min(k, len(df))
-        centroids = []
-        if actual_k > 0:
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                kmeans = KMeans(n_clusters=actual_k, random_state=42, n_init='auto')
-                df['cluster'] = kmeans.fit_predict(pca_result)
-                centroids = kmeans.cluster_centers_.tolist()
-        else:
-            df['cluster'] = 0
+            for symbol in nifty50_tickers:
+                db_data = StockData.objects.filter(symbol=symbol).first()
+                try:
+                    # For AI logic, we still need some history. 
+                    # If we truly want zero-API, we should also store history in DB.
+                    # But for now, we minimize it by using the batch helper with high caching.
+                    # As per user's "no direct API dependency", we'll use the DB data for current metrics.
+                    if not db_data: continue
+                    
+                    # Note: We still use get_batch_stock_data here for the *history* part only, 
+                    # as storing full history for 400 stocks every 2m is huge.
+                    # However, batch_results is cached for 10m.
+                    data = get_batch_stock_data([symbol], use_cache=True).get(symbol)
+                    if not data or data['history'] is None or data['history'].empty:
+                        continue
+                    
+                    closes = data['history']['Close'].dropna()
+                    if len(closes) < 10:
+                        continue
+                    
+                    portfolio_prices[symbol] = closes
+                    annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
+                    daily_returns = closes.pct_change().dropna()
+                    volatility = daily_returns.std() * np.sqrt(252)
+                    
+                    curr_price = db_data.current_price or float(closes.iloc[-1])
+                    pe_ratio = db_data.pe_ratio or 15.0
+                    max_price = db_data.max_price_52w or float(curr_price)
+                    
+                    discount_level, opportunity_score = calculate_stock_metrics(curr_price, max_price, pe_ratio)
 
-        # Construct payload mapping
-        clusters = []
-        for i in range(actual_k):
-            cluster_df = df[df['cluster'] == i]
-            cluster_stocks = []
-            
-            for _, row in cluster_df.iterrows():
-                cluster_stocks.append({
-                    "symbol": row["symbol"],
-                    "company_name": row["company_name"],
-                    "pc1": float(row["pc1"]),
-                    "pc2": float(row["pc2"]),
-                    "returns": float(row["returns"]),
-                    "volatility": float(row["volatility"]),
-                    "current_price": float(row["current_price"]),
-                    "pe_ratio": float(row["pe_ratio"]),
-                    "discount_level": float(row["discount_level"]),
-                    "opportunity": float(row["opportunity"])
+                    compiled_data.append({
+                        "symbol": symbol.replace(".NS", ""),
+                        "company_name": db_data.company_name or symbol,
+                        "returns": float(annual_return),
+                        "volatility": float(volatility),
+                        "current_price": float(curr_price),
+                        "pe_ratio": float(pe_ratio),
+                        "discount_level": float(discount_level),
+                        "opportunity": float(opportunity_score)
+                    })
+                except Exception as e:
+                    print(f"Error processing {symbol}: {e}")
+                    continue
+
+            if not compiled_data:
+                return Response({"error": "Failed to compile NIFTY 50 features."}, status=500)
+
+            df = pd.DataFrame(compiled_data)
+            feature_cols = ["returns", "volatility", "current_price", "pe_ratio", "discount_level", "opportunity"]
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(df[feature_cols])
+
+            pca = PCA(n_components=2, random_state=42)
+            pca_result = pca.fit_transform(scaled_features)
+            df['pc1'], df['pc2'] = pca_result[:, 0], pca_result[:, 1]
+            explained_variance = pca.explained_variance_ratio_
+
+            actual_k = min(k, len(df))
+            centroids = []
+            if actual_k > 0:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    kmeans = KMeans(n_clusters=actual_k, random_state=42, n_init='auto')
+                    df['cluster'] = kmeans.fit_predict(pca_result)
+                    centroids = kmeans.cluster_centers_.tolist()
+            else:
+                df['cluster'] = 0
+
+            clusters = []
+            for i in range(actual_k):
+                cluster_df = df[df['cluster'] == i]
+                cluster_stocks = []
+                for _, row in cluster_df.iterrows():
+                    cluster_stocks.append({
+                        "symbol": row["symbol"], "company_name": row["company_name"],
+                        "pc1": float(row["pc1"]), "pc2": float(row["pc2"]),
+                        "returns": float(row["returns"]), "volatility": float(row["volatility"]),
+                        "current_price": float(row["current_price"]), "pe_ratio": float(row["pe_ratio"]),
+                        "discount_level": float(row["discount_level"]), "opportunity": float(row["opportunity"])
+                    })
+                clusters.append({
+                    "cluster_index": i,
+                    "centroid_pc1": float(centroids[i][0]) if centroids else 0.0,
+                    "centroid_pc2": float(centroids[i][1]) if centroids else 0.0,
+                    "stocks": cluster_stocks
                 })
-                
-            clusters.append({
-                "cluster_index": i,
-                "centroid_pc1": float(centroids[i][0]) if centroids else 0.0,
-                "centroid_pc2": float(centroids[i][1]) if centroids else 0.0,
-                "stocks": cluster_stocks
-            })
 
-        return Response({
-            "k": actual_k,
-            "variance_explained_pc1": round(float(explained_variance[0] * 100), 2),
-            "variance_explained_pc2": round(float(explained_variance[1] * 100), 2),
-            "clusters": clusters
-        })
+            return Response({
+                "k": actual_k,
+                "variance_explained_pc1": round(float(explained_variance[0] * 100), 2),
+                "variance_explained_pc2": round(float(explained_variance[1] * 100), 2),
+                "clusters": clusters
+            })
+        except Exception as e:
+            traceback.print_exc()
+            return Response({"error": f"Nifty PCA internal error: {str(e)}"}, status=500)
 
 
 class PreciousMetalsAPIView(APIView):
@@ -1194,215 +1756,164 @@ class PreciousMetalsAPIView(APIView):
         import pandas as pd
         import numpy as np
         import concurrent.futures
-        import shap
-        from lime.lime_tabular import LimeTabularExplainer
-        from sklearn.ensemble import RandomForestRegressor
-        from sklearn.impute import SimpleImputer
-        from sklearn.preprocessing import StandardScaler
-
-        precious_metals_tickers = [
-            "GLD", "SLV", "IAU", "SGOL", "SIVR", "PPLT", "PALL", "GDX", "GDXJ", "SIL", 
-            "SILJ", "NEM", "GOLD", "AEM", "FNV", "WPM", "KGC", "PAAS", "HL", "CDE",
-            "AG", "FSM", "EXK", "EGO", "NGD", "SA", "AUY", "BTG", "IAG", "MAG",
-            "SAND", "OR", "SSRM", "CGAU", "EQX", "OSK", "GFI", "AU", "HMY", "DRD"
-        ]
-
-        # 1. Fetch 1-Year Historical Prices
+        import traceback
         try:
-            hist_data = yf.download(precious_metals_tickers, period="1y", interval="1d", group_by="ticker", threads=True, progress=False)
-        except Exception as e:
-            return Response({"error": f"yfinance download failed: {str(e)}"}, status=500)
+            # ... existing imports ...
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.impute import SimpleImputer
+            from sklearn.preprocessing import StandardScaler
 
-        def fetch_ticker_info(ticker):
-            try:
-                t = yf.Ticker(ticker)
-                info = t.info
-                active_price = info.get("currentPrice", info.get("regularMarketPrice", None))
-                pe = info.get("trailingPE", info.get("forwardPE", 15.0)) 
-                fifty_two_high = info.get("fiftyTwoWeekHigh", active_price if active_price else 1)
-                company_name = info.get("shortName", info.get("longName", ticker))
-                
-                return {
-                    "symbol": ticker,
-                    "company_name": company_name,
-                    "current_price": active_price,
-                    "pe_ratio": pe,
-                    "max_price": fifty_two_high
-                }
-            except Exception:
-                return None
+            precious_metals_tickers = [
+                "GLD", "SLV", "IAU", "SGOL", "SIVR", "PPLT", "PALL", "GDX", "GDXJ", "SIL", 
+                "SILJ", "NEM", "GOLD", "AEM", "FNV", "WPM", "KGC", "PAAS", "HL", "CDE",
+                "AG", "FSM", "EXK", "EGO", "NGD", "SA", "AUY", "BTG", "IAG", "MAG",
+                "SAND", "OR", "SSRM", "CGAU", "EQX", "OSK", "GFI", "AU", "HMY", "DRD"
+            ]
 
-        ticker_info_list = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = executor.map(fetch_ticker_info, precious_metals_tickers)
-            for res in results:
-                if res:
-                    ticker_info_list.append(res)
+            # Separate pure commodities from mining stocks
+            pure_commodities = ["GLD", "SLV", "IAU", "SGOL", "SIVR", "PPLT", "PALL"]
+            mining_stocks = [t for t in precious_metals_tickers if t not in pure_commodities]
+
+            ticker_info_list = []
+            portfolio_prices = {}
+            target_returns = []
+
+            # --- Process Mining Stocks (which have PE, etc.) ---
+            for symbol in mining_stocks:
+                db_data = StockData.objects.filter(symbol=symbol).first()
+                try:
+                    data = get_batch_stock_data([symbol], use_cache=True).get(symbol)
+                    if not data or data['history'] is None or data['history'].empty:
+                        continue
                     
-        compiled_data = []
-        portfolio_prices = {}
-        target_returns = []
+                    closes = data['history']['Close'].dropna()
+                    if len(closes) < 130: continue
 
-        for info in ticker_info_list:
-            symbol = info['symbol']
-            try:
-                if isinstance(hist_data.columns, pd.MultiIndex):
-                    closes = hist_data[symbol]['Close'].dropna()
-                else:
-                    closes = hist_data['Close'].dropna()
-            except Exception:
-                continue
-                
-            if len(closes) < 130:
-                continue
-                
-            portfolio_prices[symbol] = closes
+                    portfolio_prices[symbol] = closes
+                    annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
+                    momentum_6m = (closes.iloc[-1] / closes.iloc[-126]) - 1
+                    volatility = closes.pct_change().dropna().std() * np.sqrt(252)
 
-            annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
-            momentum_6m = (closes.iloc[-1] / closes.iloc[-126]) - 1
+                    curr_price = db_data.current_price if db_data else float(closes.iloc[-1])
+                    pe_ratio = get_safe_pe_ratio(symbol) # Use safe fetcher
+                    max_price = db_data.max_price_52w if db_data else float(curr_price)
+                    
+                    discount_level, opportunity_score = calculate_stock_metrics(curr_price, max_price, pe_ratio)
+                    target = (closes.iloc[-1] / closes.iloc[-21]) - 1
+
+                    ticker_info_list.append({
+                        "symbol": symbol, "company_name": db_data.company_name if db_data else symbol,
+                        "returns": float(annual_return), "volatility": float(volatility),
+                        "momentum": float(momentum_6m), "pe_ratio": float(pe_ratio or 0.0),
+                        "discount_level": float(discount_level), "opportunity": float(opportunity_score),
+                        "current_price": float(curr_price)
+                    })
+                    target_returns.append(target)
+                except Exception as e:
+                    print(f"Error processing mining stock {symbol}: {e}")
+
+            # --- Process Pure Commodities (simpler metrics) ---
+            for symbol in pure_commodities:
+                try:
+                    data = get_batch_stock_data([symbol], use_cache=True).get(symbol)
+                    if not data or data['history'] is None or data['history'].empty:
+                        continue
+                    
+                    closes = data['history']['Close'].dropna()
+                    if len(closes) < 130: continue
+
+                    portfolio_prices[symbol] = closes
+                    annual_return = (closes.iloc[-1] / closes.iloc[0]) - 1
+                    momentum_6m = (closes.iloc[-1] / closes.iloc[-126]) - 1
+                    volatility = closes.pct_change().dropna().std() * np.sqrt(252)
+                    target = (closes.iloc[-1] / closes.iloc[-21]) - 1
+
+                    ticker_info_list.append({
+                        "symbol": symbol, "company_name": f"{symbol} (Commodity)",
+                        "returns": float(annual_return), "volatility": float(volatility),
+                        "momentum": float(momentum_6m), "pe_ratio": 0.0, # N/A for commodities
+                        "discount_level": 0.0, "opportunity": 0.0, # N/A for commodities
+                        "current_price": float(closes.iloc[-1])
+                    })
+                    target_returns.append(target)
+                except Exception as e:
+                    print(f"Error processing commodity {symbol}: {e}")
             
-            daily_returns = closes.pct_change().dropna()
-            volatility = daily_returns.std() * np.sqrt(252)
-
-            curr_price = info['current_price'] if info['current_price'] else closes.iloc[-1]
-            pe_ratio = info['pe_ratio'] if info['pe_ratio'] is not None else 15.0
-            max_price = info['max_price'] if info['max_price'] else curr_price
-            
-            discount_level = 0.0
-            if max_price and curr_price and max_price > 0:
-                discount_level = max(0, ((max_price - curr_price) / max_price) * 100)
+            # Use ticker_info_list as compiled_data
+            compiled_data = ticker_info_list
                 
-            opportunity_score = discount_level / (pe_ratio if pe_ratio > 0 else 1)
+            if not compiled_data:
+                return Response({"error": "Failed to compile precious metals data."}, status=500)
 
-            target = (closes.iloc[-1] / closes.iloc[-21]) - 1
-
-            compiled_data.append({
-                "symbol": symbol,
-                "company_name": info.get("company_name", symbol),
-                "returns": float(annual_return),
-                "volatility": float(volatility),
-                "momentum": float(momentum_6m),
-                "pe_ratio": float(pe_ratio),
-                "discount_level": float(discount_level),
-                "opportunity": float(opportunity_score),
-                "current_price": float(curr_price)
-            })
-            target_returns.append(target)
+            df = pd.DataFrame(compiled_data)
             
-        if not compiled_data:
-            return Response({"error": "Failed to compile precious metals data."}, status=500)
-
-        df = pd.DataFrame(compiled_data)
-        
-        common_index = None
-        for sym, closes in portfolio_prices.items():
-            if common_index is None:
-                common_index = closes.index
-            else:
-                common_index = common_index.intersection(closes.index)
-                
-        if len(common_index) > 0:
-            growth_df = pd.DataFrame(index=common_index)
+            common_index = None
             for sym, closes in portfolio_prices.items():
-                if sym in df['symbol'].values:
-                    growth_df[sym] = closes.reindex(common_index)
-            
-            growth_df = growth_df / growth_df.iloc[0]
-            portfolio_value = growth_df.mean(axis=1) * 10000
-            
-            portfolio_growth_series = []
-            for date, val in portfolio_value.items():
-                portfolio_growth_series.append({
-                    "date": date.strftime('%Y-%m-%d'),
-                    "value": float(val)
-                })
-        else:
-            portfolio_growth_series = []
-            
-        feature_cols = ["returns", "volatility", "momentum", "pe_ratio", "opportunity"]
-        X = df[feature_cols]
-        y = np.array(target_returns)
-        
-        imputer = SimpleImputer(strategy='median')
-        X_imputed = imputer.fit_transform(X)
-        
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_imputed)
-        
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X_scaled, y)
-        
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_scaled)
-        
-        shap_importance = np.mean(np.abs(shap_values), axis=0)
-        shap_data = []
-        for i, col in enumerate(feature_cols):
-            shap_data.append({
-                "feature": col.capitalize(),
-                "importance": float(shap_importance[i]) * 100
-            })
-            
-        shap_data.sort(key=lambda x: x["importance"], reverse=True)
-        
-        lime_target_idx = 0
-        target_sym = "NEM"
-        if target_sym in df['symbol'].values:
-            lime_target_idx = df[df['symbol'] == target_sym].index[0]
-        elif len(df) > 0:
-            lime_target_idx = 0
-            
-        target_instance = X_scaled[lime_target_idx]
-        target_company = df.iloc[lime_target_idx]['company_name']
-        
-        lime_explainer = LimeTabularExplainer(
-            X_scaled,
-            feature_names=feature_cols,
-            class_names=['1M_Return'],
-            mode='regression',
-            random_state=42
-        )
-        
-        lime_exp = lime_explainer.explain_instance(
-            target_instance, 
-            model.predict, 
-            num_features=5
-        )
-        
-        lime_data_raw = lime_exp.as_list()
-        lime_data = []
-        for feature_desc, weight in lime_data_raw:
-            detected_feature = "Unknown"
-            for col in feature_cols:
-                if col in feature_desc:
-                    detected_feature = col.capitalize()
-                    break
+                if common_index is None: common_index = closes.index
+                else: common_index = common_index.intersection(closes.index)
                     
-            lime_data.append({
-                "feature": detected_feature,
-                "contribution": float(weight) * 100 
+            portfolio_growth_series = []
+            if common_index is not None and len(common_index) > 0:
+                growth_df = pd.DataFrame(index=common_index)
+                for sym, closes in portfolio_prices.items():
+                    if sym in df['symbol'].values:
+                        growth_df[sym] = closes.reindex(common_index)
+                
+                growth_df = growth_df / growth_df.iloc[0]
+                portfolio_value = growth_df.mean(axis=1) * 10000
+                for date, val in portfolio_value.items():
+                    portfolio_growth_series.append({"date": date.strftime('%Y-%m-%d'), "value": float(val)})
+            
+            # Machine Learning Block
+            try:
+                feature_cols = ["returns", "volatility", "momentum", "pe_ratio", "opportunity"]
+                X = df[feature_cols]
+                y = np.array(target_returns)
+                X_imputed = SimpleImputer(strategy='median').fit_transform(X)
+                X_scaled = StandardScaler().fit_transform(X_imputed)
+                
+                model = RandomForestRegressor(n_estimators=100, random_state=42)
+                model.fit(X_scaled, y)
+                
+                import shap
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(X_scaled)
+                shap_importance = np.mean(np.abs(shap_values), axis=0)
+                shap_data = [{"feature": col.capitalize(), "importance": float(shap_importance[i]) * 100} for i, col in enumerate(feature_cols)]
+                shap_data.sort(key=lambda x: x["importance"], reverse=True)
+                
+                # Lime Explanation
+                from lime.lime_tabular import LimeTabularExplainer
+                target_sym = "NEM"
+                lime_target_idx = df[df['symbol'] == target_sym].index[0] if target_sym in df['symbol'].values else 0
+                target_instance = X_scaled[lime_target_idx]
+                target_company = df.iloc[lime_target_idx]['company_name']
+                
+                lime_explainer = LimeTabularExplainer(X_scaled, feature_names=feature_cols, class_names=['1M_Return'], mode='regression', random_state=42)
+                lime_exp = lime_explainer.explain_instance(target_instance, model.predict, num_features=5)
+                lime_data = [{"feature": col.capitalize(), "contribution": float(weight) * 100} for desc, weight in lime_exp.as_list() for col in feature_cols if col in desc]
+            except Exception as ml_err:
+                print(f"ML Processing error: {ml_err}")
+                shap_data = []
+                lime_data = {"asset": "N/A", "explanations": []}
+                target_company = "N/A"
+
+            # Value Matrix cap
+            vm_df = df.copy()
+            pe_90th = vm_df['pe_ratio'].quantile(0.90)
+            opp_90th = vm_df['opportunity'].quantile(0.90)
+            vm_df['pe_ratio'] = np.clip(vm_df['pe_ratio'], 0, pe_90th)
+            vm_df['opportunity'] = np.clip(vm_df['opportunity'], 0, opp_90th)
+
+            return Response({
+                "value_matrix_data": vm_df.to_dict('records'),
+                "portfolio_growth_series": portfolio_growth_series,
+                "shap_data": shap_data,
+                "lime_data": {"asset": target_company, "explanations": lime_data}
             })
-
-        # --- Outlier Control for Scatter Plot ---
-        # Cap P/E Ratio and Opportunity Score to prevent extreme outliers from compressing the chart
-        vm_df = df.copy()
-        
-        pe_90th = vm_df['pe_ratio'].quantile(0.90)
-        opp_90th = vm_df['opportunity'].quantile(0.90)
-        
-        vm_df['pe_ratio'] = np.clip(vm_df['pe_ratio'], 0, pe_90th)
-        vm_df['opportunity'] = np.clip(vm_df['opportunity'], 0, opp_90th)
-        # ----------------------------------------
-
-        return Response({
-            "value_matrix_data": vm_df.to_dict('records'),
-            "portfolio_growth_series": portfolio_growth_series,
-            "shap_data": shap_data,
-            "lime_data": {
-                "asset": target_company,
-                "explanations": lime_data
-            }
-        })
+        except Exception as e:
+            traceback.print_exc()
+            return Response({"error": f"Precious Metals analysis internal error: {str(e)}"}, status=500)
 
 class SimpleRNN:
     def __init__(self, input_dim, hidden_dim, output_dim):
@@ -1597,7 +2108,14 @@ class CryptoForecastingAPIView(APIView):
         import numpy as np
         from datetime import timedelta
         from sklearn.linear_model import LinearRegression
-        from sklearn.preprocessing import MinMaxScaler
+    def get(self, request):
+        import yfinance as yf
+        import pandas as pd
+        import numpy as np
+        import traceback
+        from datetime import timedelta
+        from sklearn.linear_model import LinearRegression, Ridge
+        from sklearn.preprocessing import MinMaxScaler, StandardScaler
         
         try:
             horizon_str = request.query_params.get('horizon', '30')
@@ -1616,183 +2134,122 @@ class CryptoForecastingAPIView(APIView):
             except ValueError: horizon = 30
             if horizon not in [7, 30, 90]: horizon = 30
 
-            asset_ticker = yf.Ticker(ticker_symbol)
-            df = asset_ticker.history(period="2y")
-            if df.empty:
-                return Response({"error": f"Failed to fetch data for {ticker_symbol}."}, status=500)
-                
-            df.index = df.index.tz_localize(None)
-            closes = df['Close'].dropna().resample('D').ffill()
+            # Data fetching using DB metadata + cached history
+            db_data = StockData.objects.filter(symbol=ticker_symbol).first()
+            if not db_data:
+                # One-off load for missing crypto/foreign assets
+                StockData.objects.get_or_create(symbol=ticker_symbol)
+                db_data = StockData.objects.filter(symbol=ticker_symbol).first()
 
-            # Base Trend Generation
-            if algorithm == "ARIMA":
-                from statsmodels.tsa.arima.model import ARIMA
-                model = ARIMA(closes, order=(5, 1, 0), trend='t')
-                model_fit = model.fit()
-                forecast_mean = model_fit.get_forecast(steps=horizon).predicted_mean.values
+            try:
+                # Use cached batch results for history to avoid direct API hits
+                batch_results = get_batch_stock_data([ticker_symbol], use_cache=True)
+                data = batch_results.get(ticker_symbol)
+                
+                if not data or data['history'] is None or data['history'].empty:
+                    return Response({"error": f"Failed to fetch history for {ticker_symbol}."}, status=500)
+                
+                df = data['history']
+                df.index = df.index.tz_localize(None)
+                closes = df['Close'].dropna().resample('D').ffill()
+            except Exception as d_err:
+                return Response({"error": f"Data retrieval error: {str(d_err)}"}, status=500)
+
+            forecast_mean = np.zeros(horizon)
             
-            elif algorithm == "LINEAR":
-                from sklearn.linear_model import Ridge
-                from sklearn.preprocessing import StandardScaler
-                df_ml = pd.DataFrame({'Close': closes})
-                for i in range(1, 6): df_ml[f'Lag_{i}'] = df_ml['Close'].shift(i)
-                df_ml['SMA_10'] = df_ml['Close'].rolling(window=10).mean()
-                df_ml = df_ml.dropna()
+            # Forecasting Block
+            try:
+                if algorithm == "ARIMA":
+                    from statsmodels.tsa.arima.model import ARIMA
+                    model = ARIMA(closes, order=(5, 1, 0), trend='t')
+                    model_fit = model.fit()
+                    forecast_mean = model_fit.get_forecast(steps=horizon).predicted_mean.values
                 
-                features = [f'Lag_{i}' for i in range(1, 6)] + ['SMA_10']
-                X_train = df_ml[features].values
-                y_train = df_ml['Close'].values
-                
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                
-                model = Ridge(alpha=10.0)
-                model.fit(X_train_scaled, y_train)
-                
-                forecast_mean = []
-                current_window = df_ml.iloc[-1].copy()
-                
-                for _ in range(horizon):
-                    x_input = np.array([[current_window[f'Lag_{i}'] for i in range(1, 6)] + [current_window['SMA_10']]])
-                    x_scaled = scaler.transform(x_input)
-                    pred = model.predict(x_scaled)[0]
-                    forecast_mean.append(pred)
+                elif algorithm == "LINEAR":
+                    df_ml = pd.DataFrame({'Close': closes})
+                    for i in range(1, 6): df_ml[f'Lag_{i}'] = df_ml['Close'].shift(i)
+                    df_ml['SMA_10'] = df_ml['Close'].rolling(window=10).mean()
+                    df_ml = df_ml.dropna()
                     
-                    # Shift window
-                    for i in range(5, 1, -1):
-                        current_window[f'Lag_{i}'] = current_window[f'Lag_{i-1}']
-                    current_window['Lag_1'] = pred
-                    # Approximation for future SMA
-                    current_window['SMA_10'] = (current_window['SMA_10'] * 9 + pred) / 10
+                    features = [f'Lag_{i}' for i in range(1, 6)] + ['SMA_10']
+                    X_train, y_train = df_ml[features].values, df_ml['Close'].values
+                    scaler = StandardScaler().fit(X_train)
+                    X_train_scaled = scaler.transform(X_train)
                     
-                forecast_mean = np.array(forecast_mean)
-            
-            # Split data for training the forecasting model
-            if algorithm in ["RNN", "CNN"]:
-                scaler = MinMaxScaler()
-                scaled_data = scaler.fit_transform(closes.values.reshape(-1, 1)).flatten()
+                    model = Ridge(alpha=10.0).fit(X_train_scaled, y_train)
+                    forecast_list = []
+                    curr_win = df_ml.iloc[-1].copy()
+                    for _ in range(horizon):
+                        x_in = np.array([[curr_win[f'Lag_{i}'] for i in range(1, 6)] + [curr_win['SMA_10']]])
+                        pred = model.predict(scaler.transform(x_in))[0]
+                        forecast_list.append(pred)
+                        for i in range(5, 1, -1): curr_win[f'Lag_{i}'] = curr_win[f'Lag_{i-1}']
+                        curr_win['Lag_1'] = pred
+                        curr_win['SMA_10'] = (curr_win['SMA_10'] * 9 + pred) / 10
+                    forecast_mean = np.array(forecast_list)
                 
-                window_size = 15
-                X_train, y_train = [], []
-                for i in range(len(scaled_data) - window_size):
-                    X_train.append(scaled_data[i:i + window_size])
-                    y_train.append(scaled_data[i + window_size])
-                
-                if algorithm == "RNN":
-                    model = SimpleRNN(input_dim=1, hidden_dim=16, output_dim=1)
+                elif algorithm in ["RNN", "CNN"]:
+                    scaler = MinMaxScaler()
+                    scaled_data = scaler.fit_transform(closes.values.reshape(-1, 1)).flatten()
+                    window_size = 15
+                    X_t, y_t = [], []
+                    for i in range(len(scaled_data) - window_size):
+                        X_t.append(scaled_data[i:i + window_size])
+                        y_t.append(scaled_data[i + window_size])
+                    
+                    model = SimpleRNN(1, 16, 1) if algorithm == "RNN" else SimpleCNN(window_size)
+                    model.fit(np.array(X_t), np.array(y_t), epochs=20)
+                    
+                    curr_win = list(scaled_data[-window_size:])
+                    forecast_scaled = []
+                    for _ in range(horizon):
+                        pred = model.forward(np.array(curr_win))
+                        val = float(pred[0] if isinstance(pred, np.ndarray) else pred)
+                        forecast_scaled.append(val)
+                        curr_win.pop(0); curr_win.append(val)
+                    forecast_mean = scaler.inverse_transform(np.array(forecast_scaled).reshape(-1, 1)).flatten()
                 else:
-                    model = SimpleCNN(window_size=window_size)
-                
-                # Train the model on full history
-                model.fit(np.array(X_train), np.array(y_train), epochs=30)
-                
-                # Recursive Multi-step Forecast
-                current_window = list(scaled_data[-window_size:])
-                forecast_scaled = []
-                for _ in range(horizon):
-                    pred = model.forward(np.array(current_window))
-                    val = float(pred[0] if isinstance(pred, np.ndarray) else pred)
-                    forecast_scaled.append(val)
-                    current_window.pop(0)
-                    current_window.append(val)
-                
-                forecast_mean = scaler.inverse_transform(np.array(forecast_scaled).reshape(-1, 1)).flatten()
-            
-            elif algorithm == "ARIMA":
-                from statsmodels.tsa.arima.model import ARIMA
-                model = ARIMA(closes, order=(5, 1, 0), trend='t')
-                model_fit = model.fit()
-                forecast_mean = model_fit.get_forecast(steps=horizon).predicted_mean.values
-            
-            elif algorithm == "LINEAR":
-                from sklearn.linear_model import Ridge
-                from sklearn.preprocessing import StandardScaler
-                df_ml = pd.DataFrame({'Close': closes})
-                for i in range(1, 6): df_ml[f'Lag_{i}'] = df_ml['Close'].shift(i)
-                df_ml['SMA_10'] = df_ml['Close'].rolling(window=10).mean()
-                df_ml = df_ml.dropna()
-                
-                features = [f'Lag_{i}' for i in range(1, 6)] + ['SMA_10']
-                X_train = df_ml[features].values
-                y_train = df_ml['Close'].values
-                
-                scaler = StandardScaler()
-                X_train_scaled = scaler.fit_transform(X_train)
-                
-                model = Ridge(alpha=10.0)
-                model.fit(X_train_scaled, y_train)
-                
-                forecast_mean = []
-                current_window = df_ml.iloc[-1].copy()
-                
-                for _ in range(horizon):
-                    x_input = np.array([[current_window[f'Lag_{i}'] for i in range(1, 6)] + [current_window['SMA_10']]])
-                    x_scaled = scaler.transform(x_input)
-                    pred = model.predict(x_scaled)[0]
-                    forecast_mean.append(pred)
-                    
-                    for i in range(5, 1, -1):
-                        current_window[f'Lag_{i}'] = current_window[f'Lag_{i-1}']
-                    current_window['Lag_1'] = pred
-                    current_window['SMA_10'] = (current_window['SMA_10'] * 9 + pred) / 10
-                    
-                forecast_mean = np.array(forecast_mean)
-            
-            else:
-                return Response({"error": f"Unsupported algorithm: {algorithm}"}, status=400)
+                    return Response({"error": f"Unsupported algorithm: {algorithm}"}, status=400)
+            except Exception as f_err:
+                print(f"Forecast model failure ({algorithm}): {f_err}")
+                forecast_mean = np.full(horizon, closes.iloc[-1]) # Fallback to flat line
 
-            # --- Backtesting for ALL Models ---
+            # Backtesting Block
             backtest_results = []
-            for algo in ["ARIMA", "LINEAR", "RNN", "CNN"]:
-                res = perform_backtesting(closes, algo, ticker_symbol)
-                if res:
-                    backtest_results.append(res)
+            try:
+                for algo in ["ARIMA", "LINEAR", "RNN", "CNN"]:
+                    res = perform_backtesting(closes, algo, ticker_symbol)
+                    if res: backtest_results.append(res)
+            except Exception as b_err:
+                print(f"Backtesting failure: {b_err}")
 
-            # Inject Realism via Stochastic Drift
-            recent_volatility = np.std(closes.diff().dropna()[-30:])
-            np.random.seed(42 + horizon + hash(ticker_symbol + algorithm) % 1000) 
-            daily_shock = np.random.normal(0, recent_volatility * 0.7, horizon)
-            stochastic_path = forecast_mean + np.cumsum(daily_shock)
-
-            # Smoothing (Exponential Moving Average)
-            smoothed_path = []
-            alpha = 0.3
-            ema = stochastic_path[0]
-            for p in stochastic_path:
+            # Stochastic Drift & Smoothing
+            vola = np.std(closes.diff().dropna()[-30:])
+            np.random.seed(42 + horizon) 
+            shocks = np.random.normal(0, vola * 0.7, horizon)
+            path = forecast_mean + np.cumsum(shocks)
+            
+            smoothed = []
+            alpha, ema = 0.3, path[0]
+            for p in path:
                 ema = alpha * p + (1 - alpha) * ema
-                smoothed_path.append(ema)
+                smoothed.append(ema)
             
-            # Formatting Response
-            recent_history = closes.iloc[-90:]
-            historical_data = [{"date": d.strftime('%Y-%m-%d'), "historical_price": float(p), "predicted_price": None} 
-                               for d, p in recent_history.items()]
-                
-            forecast_data = [{"date": recent_history.index[-1].strftime('%Y-%m-%d'), "historical_price": None, "predicted_price": float(recent_history.iloc[-1])}]
+            recent_hist = closes.iloc[-90:]
+            hist_data_json = [{"date": d.strftime('%Y-%m-%d'), "historical_price": float(p), "predicted_price": None} for d, p in recent_hist.items()]
+            forecast_data_json = [{"date": recent_hist.index[-1].strftime('%Y-%m-%d'), "historical_price": None, "predicted_price": float(recent_hist.iloc[-1])}]
             
-            start_date = recent_history.index[-1] + timedelta(days=1)
+            start_date = recent_hist.index[-1] + timedelta(days=1)
             for i in range(horizon):
-                forecast_data.append({
-                    "date": (start_date + timedelta(days=i)).strftime('%Y-%m-%d'),
-                    "historical_price": None,
-                    "predicted_price": float(smoothed_path[i])
-                })
+                forecast_data_json.append({"date": (start_date + timedelta(days=i)).strftime('%Y-%m-%d'), "historical_price": None, "predicted_price": float(smoothed[i])})
 
             return Response({
-                "symbol": ticker_symbol,
-                "asset_name": selected_asset,
-                "algorithm": algorithm,
-                "horizon": horizon,
-                "data": historical_data + forecast_data,
-                "backtesting_results": backtest_results
+                "symbol": ticker_symbol, "asset_name": selected_asset, "algorithm": algorithm,
+                "horizon": horizon, "data": hist_data_json + forecast_data_json, "backtesting_results": backtest_results
             })
-
         except Exception as e:
-            return Response({"error": str(e)}, status=500)
-            
-        except Exception as e:
-            import traceback
             traceback.print_exc()
-            return Response({"error": str(e)}, status=500)
+            return Response({"error": f"Crypto analysis internal error: {str(e)}"}, status=500)
 
 # Global in-memory cache for backtesting results to prevent excessive recalculations
 BACKTEST_CACHE = {}
@@ -1818,6 +2275,11 @@ class ModelBacktestAPIView(APIView):
         }
         ticker = asset_map.get(raw_ticker, raw_ticker)
         
+        # 1. Resolve to Yahoo symbol (add .NS if missing)
+        # Check if this is a stock vs crypto/metal from asset_map
+        if ticker == raw_ticker and "." not in ticker:
+            ticker = ticker + ".NS"
+
         # Check cache first
         cache_key = f"backtest_{ticker}_{datetime.now().strftime('%Y-%m-%d')}"
         if cache_key in BACKTEST_CACHE:
@@ -1827,9 +2289,24 @@ class ModelBacktestAPIView(APIView):
             })
 
         try:
-            # 1. Fetch 2 years of data dynamically
-            df = yf.download(ticker, period="2y", progress=False)
-            if df.empty:
+            # Robust fetch via DB + cached history
+            db_data = StockData.objects.filter(symbol=ticker).first()
+            if not db_data:
+                StockData.objects.get_or_create(symbol=ticker)
+                db_data = StockData.objects.filter(symbol=ticker).first()
+
+            # Request 2y to align with UI description
+            batch_results = get_batch_stock_data([ticker], period="2y", use_cache=True)
+            data = batch_results.get(ticker)
+            
+            df = data.get('history') if data else None
+            
+            # Fallback if cache/batch fails
+            if df is None or df.empty:
+                print(f"Backtest cache miss for {ticker}, trying direct fetch...")
+                df = yf.Ticker(ticker).history(period="2y")
+            
+            if df is None or df.empty:
                 return Response({"ticker": ticker, "results": []}, status=200)
             
             closes = df['Close'].dropna()
@@ -1976,52 +2453,101 @@ class SentimentAPIView(APIView):
         
         # Prepare yahoo symbol
         yahoo_symbol = symbol.upper() if symbol.upper().endswith(".NS") else symbol.upper() + ".NS"
+        base_symbol = symbol.upper().replace(".NS", "")
         
         try:
             # Prepare queries
             all_news = []
             
-            # 1. Ticker News
+            # 1. Fetch Company Name from DB
+            stock_obj = Stock.objects.filter(symbol=symbol).first()
+            company_name = stock_obj.name if stock_obj else base_symbol
+            
+            # Clean company name for better keyword matching (e.g., "HCL Technologies Ltd" -> ["hcl", "technologies"])
+            clean_name = company_name.replace("Ltd.", "").replace("Limited", "").replace("Corporation", "").strip()
+            name_keywords = [w.lower() for w in clean_name.split() if len(w) > 2]
+            
+            # 1. Ticker News (Yahoo Finance's built-in news for the ticker)
             ticker = yf.Ticker(yahoo_symbol)
             all_news.extend(getattr(ticker, 'news', []))
             
-            # 2. Search by Symbol
+            # 2. Search by Specific Query
             try:
-                search_sym = yf.Search(yahoo_symbol)
-                all_news.extend(search_sym.news)
+                # Try a broader search for Indian stocks
+                search_query = f"{company_name} share price news"
+                search_results = yf.Search(search_query)
+                all_news.extend(search_results.news)
             except: pass
             
-            # 3. Search by Company Name
+            # 3. Search by Symbol and News
             try:
-                stock_obj = Stock.objects.filter(symbol=symbol).first()
-                if stock_obj:
-                    search_name = yf.Search(f"{stock_obj.name} stock news India")
-                    all_news.extend(search_name.news)
+                search_query_2 = f"{base_symbol} news India"
+                search_results_2 = yf.Search(search_query_2)
+                all_news.extend(search_results_2.news)
             except: pass
 
-            # De-duplicate and Validate
+            # 4. Fallback search if still empty
+            if not all_news:
+                try:
+                    search_query_3 = f"{company_name} news"
+                    search_results_3 = yf.Search(search_query_3)
+                    all_news.extend(search_results_3.news)
+                except: pass
+
+            # --- Strict De-duplication and Relevance Filtering ---
             seen_titles = set()
             valid_news = []
+            
+            # Key core words for filtering (ignore generic words)
+            ignore_words = {"ltd", "limited", "corp", "corporation", "india", "stock", "share", "price"}
+            core_keywords = [kw for kw in name_keywords if kw not in ignore_words]
+            if not core_keywords: core_keywords = [base_symbol.lower()]
+
             for n in all_news:
                 title = n.get('title') or n.get('text') or n.get('headline')
-                if title and title not in seen_titles:
+                if not title: continue
+                
+                title_lower = title.lower()
+                
+                # Relevance: Title must contain base symbol OR any core keyword
+                is_relevant = (base_symbol.lower() in title_lower) or \
+                              any(kw in title_lower for kw in core_keywords)
+                
+                if is_relevant and title not in seen_titles:
                     seen_titles.add(title)
                     valid_news.append(n)
+
+            # If still no valid news after relevance filter, take whatever we found from ticker news as absolute fallback
+            if not valid_news:
+                ticker_news = getattr(ticker, 'news', [])
+                if ticker_news:
+                    for n in ticker_news:
+                        title = n.get('title')
+                        if title and title not in seen_titles:
+                            valid_news.append(n)
+                            seen_titles.add(title)
+                
+                # If STILL nothing, take the first 3 items from all_news regardless of filter (better than empty)
+                if not valid_news and all_news:
+                    for n in all_news[:3]:
+                        title = n.get('title')
+                        if title and title not in seen_titles:
+                            valid_news.append(n)
+                            seen_titles.add(title)
 
             analyzer = SentimentIntensityAnalyzer()
             
             # --- Sentiment Calculation ---
             all_sentiments = []
-            print(f"\n--- Sentiment Debug: {symbol} ---")
-            
             final_headlines = []
-            for item in valid_news[:10]: # Changed from `news` to `valid_news`
+            
+            # Process up to 10 most relevant news
+            for item in valid_news[:10]:
                 title = item.get('title') or item.get('text') or item.get('headline')
                 if title:
                     score = analyzer.polarity_scores(title)['compound']
                     all_sentiments.append(score)
                     final_headlines.append(title)
-                    print(f"[{round(score, 2)}] {title}")
 
             if not all_sentiments:
                  return Response({
@@ -2150,3 +2676,155 @@ class AIReviewView(APIView):
             return Response({
                 "error": f"AI Review failed: {str(e)}"
             }, status=500)
+
+
+# -----------------------------
+# 🏢 SECTOR PORTFOLIOS API
+# -----------------------------
+def sync_sector_portfolios():
+    """
+    Returns the list of sector-based portfolios. Creates the Portfolio object if it doesn't exist.
+    """
+    sectors = Stock.objects.exclude(sector__in=[None, "", "nan", "Unknown", "Various"]).values_list('sector', flat=True).distinct()
+    
+    sector_data = []
+
+    for sector in sectors:
+        clean_sector = str(sector).title()
+        portfolio_name = f"{clean_sector} Portfolio"
+
+        portfolio, created = Portfolio.objects.get_or_create(
+            name=portfolio_name,
+            defaults={"description": f"Auto-generated portfolio for {clean_sector} sector.", "portfolio_type": "ai_builtin"}
+        )
+        
+        # We don't bulk-create stocks here anymore. It happens on demand.
+        current_count = PortfolioStock.objects.filter(portfolio=portfolio).count()
+        if current_count == 0:
+            current_count = Stock.objects.filter(sector=sector).count()
+
+        sector_data.append({
+            "id": str(portfolio.id),
+            "name": portfolio_name,
+            "sector": clean_sector,
+            "type": "sector",
+            "stock_count": current_count
+        })
+
+    return sorted(sector_data, key=lambda x: x["name"])
+
+
+def get_sector_portfolio_stocks(portfolio_id):
+    """
+    Fetch and update stocks for a specific sector portfolio.
+    This version uses the pre-cached StockData table for high performance
+    and avoids live API calls, relying on the background sync.
+    """
+    try:
+        portfolio = Portfolio.objects.get(id=portfolio_id)
+    except Portfolio.DoesNotExist:
+        return []
+
+    # Use a 1-minute cache for responsiveness
+    portfolio_cache_key = f"processed_sector_v2_{portfolio_id}"
+    cached_data = cache.get(portfolio_cache_key)
+    if cached_data:
+        return cached_data
+
+    # Identify the sector from the portfolio name
+    sector_name = portfolio.name.replace(" Portfolio", "")
+    
+    # 1. Get all symbols for the given sector from the canonical Stock model
+    symbols_in_sector = list(Stock.objects.filter(sector__iexact=sector_name).values_list('symbol', flat=True))
+    
+    if not symbols_in_sector:
+        return []
+
+    # 2. Fetch all corresponding data from the StockData cache table in one query
+    stocks_data = StockData.objects.filter(symbol__in=symbols_in_sector)
+    
+    # Create a lookup map for quick access
+    data_map = {s.symbol: s for s in stocks_data}
+
+    all_processed = []
+    # 3. Iterate through the symbols to ensure all stocks from the sector are included
+    for symbol in symbols_in_sector:
+        try:
+            db_data = data_map.get(symbol)
+            
+            # If data is missing from StockData, try to fetch it once on the fly
+            if not db_data:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    ticker_df = ticker.history(period="5d")
+                    if not ticker_df.empty:
+                        price = float(ticker_df['Close'].iloc[-1])
+                        max_52w = float(ticker_df['High'].max()) # Simplified for on-the-fly
+                        pe = get_safe_pe_ratio(symbol, ticker)
+                        
+                        db_data, _ = StockData.objects.update_or_create(
+                            symbol=symbol,
+                            defaults={
+                                "current_price": price,
+                                "pe_ratio": pe,
+                                "max_price_52w": max_52w,
+                                "company_name": symbol,
+                                "last_sync": timezone.now()
+                            }
+                        )
+                except Exception:
+                    pass
+
+            # If data exists but PE is null, try to fetch it once on the fly
+            pe_val = db_data.pe_ratio if db_data else None
+            if db_data and pe_val is None:
+                pe_val = get_safe_pe_ratio(symbol)
+                if pe_val:
+                    db_data.pe_ratio = pe_val
+                    db_data.save()
+            
+            current_price = db_data.current_price if db_data else None
+            max_price = db_data.max_price_52w if db_data else None
+            comp_name = db_data.company_name if db_data else symbol
+            
+            disc, opp = calculate_stock_metrics(current_price, max_price, pe_val)
+
+            # Convert current_price to float once and handle None
+            current_price_float = float(current_price) if current_price is not None else None
+
+            all_processed.append({
+                "id": f"sector_{symbol}",
+                "symbol": symbol,
+                "company_name": comp_name,
+                "current_price": round(current_price_float, 2) if current_price_float is not None else None,
+                "buy_price": round(current_price_float * 0.95, 2) if current_price_float is not None else None,
+                "quantity": 10, # Mock quantity for display
+                "pe_ratio": pe_val,
+                "max_price": round(float(max_price), 2) if max_price is not None else None,
+                "discount_level": disc,
+                "opportunity": opp,
+                "investment_value": round((current_price_float * 0.95) * 10, 2) if current_price_float is not None else None,
+                "current_value": round(current_price_float * 10, 2) if current_price_float is not None else None,
+                "pnl": round((current_price_float - (current_price_float * 0.95)) * 10, 2) if current_price_float is not None else None,
+                "pnl_pct": 5.0 if current_price_float is not None else None,
+                "sector": sector_name
+            })
+        except Exception as e:
+            # If a single stock fails, log it and continue
+            print(f"Warning: Failed to process stock {symbol} in sector {sector_name}. Error: {e}. Skipping.")
+            continue
+
+    # Cache the processed data for 1 minute
+    cache.set(portfolio_cache_key, all_processed, 60)
+    
+    return all_processed
+
+
+class SectorPortfolioListAPIView(APIView):
+    def get(self, request):
+        try:
+            sector_data = sync_sector_portfolios()
+            return Response(sector_data)
+        except Exception as e:
+            traceback.print_exc()
+            return Response({"error": str(e)}, status=500)

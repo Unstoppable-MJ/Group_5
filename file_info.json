@@ -1,0 +1,73 @@
+{
+  "india": {
+    "columns": [
+      "Company Name",
+      "Industry",
+      "Symbol",
+      "Series",
+      "ISIN Code"
+    ],
+    "head": [
+      {
+        "Company Name": "360 ONE WAM Ltd.",
+        "Symbol": "360ONE"
+      },
+      {
+        "Company Name": "ABB India Ltd.",
+        "Symbol": "ABB"
+      },
+      {
+        "Company Name": "ACC Ltd.",
+        "Symbol": "ACC"
+      },
+      {
+        "Company Name": "APL Apollo Tubes Ltd.",
+        "Symbol": "APLAPOLLO"
+      },
+      {
+        "Company Name": "AU Small Finance Bank Ltd.",
+        "Symbol": "AUBANK"
+      }
+    ]
+  },
+  "usa": {
+    "columns": [
+      "Company",
+      "Symbol",
+      "Weight",
+      "Price"
+    ],
+    "head": [
+      {
+        "Company": "Nvidia",
+        "Symbol": "NVDA",
+        "Weight": 0.0712,
+        "Price": 172.7
+      },
+      {
+        "Company": "Apple Inc.",
+        "Symbol": "AAPL",
+        "Weight": 0.0618,
+        "Price": 247.99
+      },
+      {
+        "Company": "Microsoft",
+        "Symbol": "MSFT",
+        "Weight": 0.0481,
+        "Price": 381.87
+      },
+      {
+        "Company": "Amazon",
+        "Symbol": "AMZN",
+        "Weight": 0.0374,
+        "Price": 205.37
+      },
+      {
+        "Company": "Alphabet Inc. (Class A)",
+        "Symbol": "GOOGL",
+        "Weight": 0.032,
+        "Price": 301.0
+      }
+    ]
+  }
+}

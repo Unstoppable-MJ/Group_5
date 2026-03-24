@@ -1,7 +1,10 @@
 import axios from "axios";
 
+const baseURL =
+  import.meta.env.VITE_API_BASE_URL?.trim() || "/api/";
+
 const API = axios.create({
-  baseURL: "http://127.0.0.1:8004/api/",
+  baseURL: baseURL.endsWith("/") ? baseURL : `${baseURL}/`,
 });
 
 // Add a request interceptor to include the auth token

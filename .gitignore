@@ -13,6 +13,7 @@ chromadb_data/
 
 # Node
 node_modules/
+staticfiles/
 
 # Env
 .env

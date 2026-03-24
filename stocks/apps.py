@@ -1,14 +1,21 @@
 from django.apps import AppConfig
 import threading
 import sys
+import os
 
 class StocksConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'stocks'
 
     def ready(self):
-        # Only start the sync if we are running the server
-        if 'runserver' in sys.argv:
+        # Keep the auto-sync thread as an opt-in development helper only.
+        enable_dev_sync = os.getenv("ENABLE_RUNSERVER_STOCK_SYNC", "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if enable_dev_sync and 'runserver' in sys.argv:
             try:
                 from .views import update_stock_db_batch
                 import time

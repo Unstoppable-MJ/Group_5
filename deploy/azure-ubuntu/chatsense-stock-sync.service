@@ -1,0 +1,11 @@
+[Unit]
+Description=ChatSense stock data sync
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=azureuser
+Group=www-data
+WorkingDirectory=/opt/chatsense/app
+EnvironmentFile=/etc/chatsense/backend.env
+ExecStart=/opt/chatsense/venv/bin/python manage.py sync_stock_data

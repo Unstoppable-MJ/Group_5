@@ -1,0 +1,15 @@
+[Unit]
+Description=ChatSense Django backend (Gunicorn)
+After=network.target
+
+[Service]
+User=azureuser
+Group=www-data
+WorkingDirectory=/opt/chatsense/app
+EnvironmentFile=/etc/chatsense/backend.env
+ExecStart=/opt/chatsense/venv/bin/gunicorn stock_project.wsgi:application --bind 127.0.0.1:8004 --workers 3 --timeout 180
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

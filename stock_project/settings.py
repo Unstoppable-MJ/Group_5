@@ -137,6 +137,7 @@ STATIC_URL = 'static/'
 CORS_ALLOW_ALL_ORIGINS = True
 
 # AI Review Configuration (Gemini API)
+# IMPORTANT: Replace this with your actual Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Telegram Bot Configuration

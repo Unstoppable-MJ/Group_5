@@ -10,6 +10,12 @@ import time
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
+# Set up a session with a user-agent to avoid "Invalid Crumb" issues
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+})
+
 def get_yf_session():
     """
     Creates a robust requests session for yfinance to bypass common 429/401 blocks.
@@ -697,6 +703,8 @@ class AddStockAPIView(APIView):
                         {"error": "Invalid stock symbol or price unavailable"},
                         status=status.HTTP_400_BAD_REQUEST
                     )
+                ticker = yf.Ticker(yahoo_symbol, session=session)
+                data = ticker.info
 
                 current_price = float(hist_1y['Close'].iloc[-1])
                 max_price = float(hist_1y['High'].max())
@@ -822,6 +830,10 @@ class StockPreviewAPIView(APIView):
             ticker = yf.Ticker(yahoo_symbol)
             # Use history instead of ticker.info
             hist_1y = ticker.history(period="1y")
+            ticker = yf.Ticker(yahoo_symbol, session=session)
+            data = ticker.info
+
+            current_price = data.get("currentPrice") or data.get("regularMarketPrice") or data.get("previousClose")
             
             if hist_1y.empty:
                 return Response({"error": "Invalid symbol or data unavailable"}, status=400)
@@ -1026,6 +1038,9 @@ class PortfolioGrowthAPIView(APIView):
         try:
             # Safely fetch 1 month of historical close prices using chunked batching
             batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
+            # Download 1 month of historical close prices for all unique symbols
+            import pandas as pd
+            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
 
             day_map = {}
             dates_ordered = []
@@ -1103,6 +1118,9 @@ class MultiStockHistoryAPIView(APIView):
         try:
             # Safely fetch multiple symbols using chunked batching
             batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
+            # Download multiple symbols at once
+            import pandas as pd
+            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False, session=session)
             
             result = {}
             for symbol, metric_data in batch_data.items():
@@ -1194,6 +1212,9 @@ class StockPredictionAPIView(APIView):
                 
             df = batch_data[yahoo_symbol].get("history")
             if df is None or df.empty:
+            ticker = yf.Ticker(yahoo_symbol, session=session)
+            df = ticker.history(period=history_period)
+            if df.empty:
                 return Response({"error": "No historical data found"}, status=404)
 
             df = df.reset_index()

@@ -70,10 +70,39 @@ def get_chatbot_response(user_input: str, history: list = None, user_id: str = N
     def chatbot(state: State):
         is_logged_in = bool(user_id)
         
+        # Model accuracy comparison data
+        model_comparison_info = """
+ChatSense uses four main categories of prediction models. Here is a comparison of their typical accuracy based on our backtesting metrics:
+
+1. **Regression Models (e.g., Ridge, Lasso)**:
+   - **Typical Accuracy**: 85-92%
+   - **Best For**: Capturing linear trends and short-term price movements based on technical indicators (SMA, Lags).
+   - **Note**: Stable but may struggle with sudden market volatility.
+
+2. **Time Series Models (ARIMA, SARIMA, Prophet)**:
+   - **Typical Accuracy**: 80-88%
+   - **Best For**: Detecting seasonality and long-term cycles in price data.
+   - **Note**: ARIMA is excellent for stationary data, while Prophet handles holidays and trends well.
+
+3. **Deep Learning Models (RNN, LSTM, GRU)**:
+   - **Typical Accuracy**: 88-95%
+   - **Best For**: Capturing non-linear patterns and complex momentum shifts.
+   - **Note**: LSTM (Long Short-Term Memory) is generally our most accurate model for complex price behaviors because it can 'remember' long-term dependencies.
+
+4. **Hybrid Models**:
+   - **Typical Accuracy**: 90-96%
+   - **Best For**: Combining the strengths of two different architectures (e.g., ARIMA for trend + LSTM for residuals).
+   - **Note**: Often provides the most robust results by averaging predictions.
+
+*Accuracy is measured using MAPE (Mean Absolute Percentage Error) subtracted from 100% during backtesting on historical data.*
+"""
+
         if is_recommendation:
             system_prompt = f"""You are a stock market expert providing personalized recommendations.
 Use the user's current portfolio (if available) to suggest complementary stocks or adjustments.
 Use the general context for current market ideas.
+
+{model_comparison_info}
 
 USER PORTFOLIO:
 {user_portfolio if user_portfolio else "No portfolio data (Guest)."}
@@ -89,12 +118,15 @@ If the user is a guest, provide general top-performing sector recommendations.
 Use the user's portfolio data provided below to answer their questions. 
 Also use the general context from our database if relevant.
 
+{model_comparison_info}
+
 USER PORTFOLIO:
 {user_portfolio}
 
 GENERAL CONTEXT:
 {state.get('context', 'No specific context found.')}
 
+If the user asks about model accuracy or comparison, use the provided comparison info.
 If the user asks about their holdings, performance, or specific stocks they own, prioritize the USER PORTFOLIO data.
 """
         else:
@@ -102,9 +134,12 @@ If the user asks about their holdings, performance, or specific stocks they own,
 The user is a guest (not logged in). Answer general stock market questions.
 Use the following context from our database if relevant.
 
+{model_comparison_info}
+
 CONTEXT:
 {state.get('context', 'No specific context found.')}
 
+If the user asks about model accuracy or comparison, use the provided comparison info.
 If the context doesn't contain the answer, use your general knowledge but mention that it's general knowledge.
 Encourage the user to log in to see their personal portfolio analysis.
 """

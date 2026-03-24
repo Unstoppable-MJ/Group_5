@@ -133,7 +133,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # AI Review Configuration (Gemini API)
 # IMPORTANT: Replace this with your actual Gemini API Key
-GEMINI_API_KEY ="AIzaSyCkWEU4H1AFFdvVboYgY3CoBidKvBx6JI0"
+GEMINI_API_KEY ="AIzaSyBvK2LPZKy7OqBOOeNIqPCSRW65kgR3vzE"
 
 # Telegram Bot Configuration
 # Get your token from @BotFather on Telegram

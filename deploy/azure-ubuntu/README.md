@@ -78,6 +78,7 @@ cd /opt/chatsense/app/frontend
 cp .env.production.example .env.production
 rm -rf node_modules package-lock.json
 npm install
+npm install -D @tailwindcss/oxide-linux-x64-gnu@^4.2.1
 npm run build
 ```
 

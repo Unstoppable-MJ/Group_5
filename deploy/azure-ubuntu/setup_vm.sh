@@ -10,13 +10,10 @@ ENV_DIR="/etc/chatsense"
 ENV_FILE="${ENV_DIR}/backend.env"
 PUBLIC_IP="20.162.106.26"
 DJANGO_PORT="8004"
-DB_NAME="chatsense_db"
-DB_USER="chatsense_user"
 
 # Fill these before running.
 REPO_URL="${REPO_URL:-https://github.com/your-org/your-repo.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
-DB_PASSWORD="${DB_PASSWORD:-replace-with-db-password}"
 DJANGO_SECRET_KEY="${DJANGO_SECRET_KEY:-replace-with-a-long-random-secret}"
 GEMINI_API_KEY="${GEMINI_API_KEY:-replace-with-gemini-key}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-replace-with-telegram-bot-token}"
@@ -32,10 +29,7 @@ sudo apt install -y \
   python3-venv \
   python3-dev \
   build-essential \
-  libpq-dev \
   nginx \
-  postgresql \
-  postgresql-contrib \
   nodejs \
   npm
 
@@ -59,22 +53,6 @@ sudo -u "${APP_USER}" python3 -m venv "${VENV_DIR}"
 sudo -u "${APP_USER}" "${VENV_DIR}/bin/pip" install --upgrade pip
 sudo -u "${APP_USER}" "${VENV_DIR}/bin/pip" install -r "${APP_DIR}/requirements.ubuntu.txt"
 
-sudo -u postgres psql <<SQL
-DO \$\$
-BEGIN
-   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${DB_USER}') THEN
-      CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
-   ELSE
-      ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASSWORD}';
-   END IF;
-END
-\$\$;
-SQL
-
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'" | grep -q 1 || \
-  sudo -u postgres createdb -O "${DB_USER}" "${DB_NAME}"
-sudo -u postgres psql -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-
 sudo tee "${ENV_FILE}" > /dev/null <<EOF
 DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
 DJANGO_DEBUG=False
@@ -84,11 +62,8 @@ DJANGO_SESSION_COOKIE_SECURE=False
 DJANGO_CSRF_COOKIE_SECURE=False
 CORS_ALLOWED_ORIGINS=http://${PUBLIC_IP}
 CSRF_TRUSTED_ORIGINS=http://${PUBLIC_IP}
-DB_NAME=${DB_NAME}
-DB_USER=${DB_USER}
-DB_PASSWORD=${DB_PASSWORD}
-DB_HOST=127.0.0.1
-DB_PORT=5432
+DB_ENGINE=sqlite
+SQLITE_PATH=${APP_DIR}/db.sqlite3
 GEMINI_API_KEY=${GEMINI_API_KEY}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 ENABLE_RUNSERVER_STOCK_SYNC=False

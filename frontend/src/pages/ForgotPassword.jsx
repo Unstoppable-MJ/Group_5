@@ -4,12 +4,15 @@ import { motion } from "framer-motion";
 import API from "../services/api";
 
 export default function ForgotPassword() {
+    const botLink = "https://t.me/unstop_mj_bot";
+    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(botLink)}`;
     const navigate = useNavigate();
     const [step, setStep] = useState(1); // 1: phone, 2: otp, 3: password
     const [phoneNumber, setPhoneNumber] = useState("");
     const [otp, setOtp] = useState("");
     const [newPassword, setNewPassword] = useState("");
     const [loading, setLoading] = useState(false);
+    const [showQr, setShowQr] = useState(false);
     const [error, setError] = useState("");
     const [message, setMessage] = useState("");
 
@@ -106,6 +109,40 @@ export default function ForgotPassword() {
                         >
                             {loading ? "Sending OTP..." : "Get OTP on Telegram"}
                         </button>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <a
+                                href={botLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="w-full text-center bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold p-3 rounded-xl transition-all"
+                            >
+                                Go to Bot
+                            </a>
+                            <button
+                                type="button"
+                                onClick={() => setShowQr((prev) => !prev)}
+                                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-semibold p-3 rounded-xl transition-all"
+                            >
+                                {showQr ? "Hide QR" : "Scan QR for Mobile"}
+                            </button>
+                        </div>
+
+                        {showQr && (
+                            <div className="rounded-2xl border border-slate-700/60 bg-slate-950/60 p-5 text-center space-y-4">
+                                <div className="mx-auto w-fit rounded-2xl bg-white p-3 shadow-lg shadow-cyan-500/10">
+                                    <img
+                                        src={qrCodeUrl}
+                                        alt="QR code for Telegram bot"
+                                        className="w-44 h-44 rounded-xl"
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <p className="text-sm font-semibold text-white">Scan to open the Telegram bot on mobile</p>
+                                    <p className="text-xs text-slate-400 break-all">{botLink}</p>
+                                </div>
+                            </div>
+                        )}
                     </form>
                 )}
 

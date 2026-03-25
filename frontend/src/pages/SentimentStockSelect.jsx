@@ -8,6 +8,7 @@ export default function SentimentStockSelect() {
     const [stocks, setStocks] = useState([]);
     const [loading, setLoading] = useState(true);
     const navigate = useNavigate();
+    const getDisplaySymbol = (symbol) => symbol?.split(".")[0] || symbol;
 
     useEffect(() => {
         API.get(`portfolio/${portfolioId}/stocks/`)
@@ -52,12 +53,12 @@ export default function SentimentStockSelect() {
                         animate={{ opacity: 1, scale: 1 }}
                         transition={{ delay: index * 0.05 }}
                         whileHover={{ scale: 1.03 }}
-                        onClick={() => navigate(`/sentiment/${portfolioId}/${stock.symbol.split('.')[0]}`)}
+                        onClick={() => navigate(`/sentiment/${portfolioId}/${encodeURIComponent(stock.symbol)}`)}
                         className="group cursor-pointer bg-[#0f172a] border border-white/5 hover:border-emerald-500/50 p-5 rounded-2xl shadow-lg transition-all"
                     >
                         <div className="flex items-center justify-between mb-3">
                             <span className="bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider">
-                                {stock.symbol.split('.')[0]}
+                                {getDisplaySymbol(stock.symbol)}
                             </span>
                             <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-lg group-hover:scale-110 transition-transform">
                                 📈

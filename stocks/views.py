@@ -14,6 +14,7 @@ from requests.packages.urllib3.util.retry import Retry
 import logging
 yf_logger = logging.getLogger('yfinance')
 yf_logger.setLevel(logging.CRITICAL)
+logger = logging.getLogger(__name__)
 
 def get_safe_pe_ratio(symbol, t=None):
     """
@@ -2451,21 +2452,36 @@ class SentimentAPIView(APIView):
         if not symbol:
             return Response({"error": "Symbol is required"}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Prepare yahoo symbol
-        yahoo_symbol = symbol.upper() if symbol.upper().endswith(".NS") else symbol.upper() + ".NS"
-        base_symbol = symbol.upper().replace(".NS", "")
+        # Normalize the incoming symbol so sector routes like BAJAJ-AUTO
+        # still resolve to the stored Yahoo symbol BAJAJ-AUTO.NS.
+        yahoo_symbol = resolve_yahoo_symbol(symbol)
+        base_symbol = yahoo_symbol.upper().replace(".NS", "")
+        db_symbol_candidates = [symbol.upper(), yahoo_symbol.upper(), base_symbol.upper()]
         
         try:
             # Prepare queries
             all_news = []
             
             # 1. Fetch Company Name from DB
-            stock_obj = Stock.objects.filter(symbol=symbol).first()
+            stock_obj = Stock.objects.filter(symbol__in=db_symbol_candidates).first()
             company_name = stock_obj.name if stock_obj else base_symbol
             
             # Clean company name for better keyword matching (e.g., "HCL Technologies Ltd" -> ["hcl", "technologies"])
             clean_name = company_name.replace("Ltd.", "").replace("Limited", "").replace("Corporation", "").strip()
             name_keywords = [w.lower() for w in clean_name.split() if len(w) > 2]
+            base_symbol_variants = {
+                base_symbol.lower(),
+                base_symbol.lower().replace("-", " "),
+                base_symbol.lower().replace("-", ""),
+            }
+            logger.info(
+                "Sentiment request symbol=%s yahoo_symbol=%s base_symbol=%s company_name=%s candidates=%s",
+                symbol,
+                yahoo_symbol,
+                base_symbol,
+                company_name,
+                db_symbol_candidates,
+            )
             
             # 1. Ticker News (Yahoo Finance's built-in news for the ticker)
             ticker = yf.Ticker(yahoo_symbol)
@@ -2494,46 +2510,67 @@ class SentimentAPIView(APIView):
                     all_news.extend(search_results_3.news)
                 except: pass
 
-            # --- Strict De-duplication and Relevance Filtering ---
-            seen_titles = set()
-            valid_news = []
+            logger.info("Sentiment raw news fetched count=%s", len(all_news))
+            for idx, item in enumerate(all_news[:10], start=1):
+                title = item.get('title') or item.get('text') or item.get('headline')
+                logger.info("Sentiment raw[%s]=%s", idx, title)
             
             # Key core words for filtering (ignore generic words)
             ignore_words = {"ltd", "limited", "corp", "corporation", "india", "stock", "share", "price"}
             core_keywords = [kw for kw in name_keywords if kw not in ignore_words]
             if not core_keywords: core_keywords = [base_symbol.lower()]
+            logger.info(
+                "Sentiment filter core_keywords=%s base_symbol_variants=%s",
+                core_keywords,
+                list(base_symbol_variants),
+            )
 
+            # Score articles instead of hard-dropping almost everything.
+            scored_news = []
+            seen_titles = set()
             for n in all_news:
                 title = n.get('title') or n.get('text') or n.get('headline')
-                if not title: continue
+                if not title:
+                    continue
                 
                 title_lower = title.lower()
-                
-                # Relevance: Title must contain base symbol OR any core keyword
-                is_relevant = (base_symbol.lower() in title_lower) or \
-                              any(kw in title_lower for kw in core_keywords)
-                
-                if is_relevant and title not in seen_titles:
-                    seen_titles.add(title)
-                    valid_news.append(n)
+                relevance_score = 0
 
-            # If still no valid news after relevance filter, take whatever we found from ticker news as absolute fallback
+                if any(variant in title_lower for variant in base_symbol_variants):
+                    relevance_score += 2
+                keyword_hits = sum(1 for kw in core_keywords if kw in title_lower)
+                relevance_score += keyword_hits
+
+                logger.info(
+                    "Sentiment candidate title=%s relevance_score=%s keyword_hits=%s",
+                    title,
+                    relevance_score,
+                    keyword_hits,
+                )
+
+                if relevance_score > 0 and title not in seen_titles:
+                    seen_titles.add(title)
+                    scored_news.append((relevance_score, n))
+
+            scored_news.sort(key=lambda item: item[0], reverse=True)
+            valid_news = [item for _, item in scored_news[:5]]
+
+            # If still no valid news after relevance filter, take whatever we found as a softer fallback.
             if not valid_news:
-                ticker_news = getattr(ticker, 'news', [])
-                if ticker_news:
-                    for n in ticker_news:
-                        title = n.get('title')
-                        if title and title not in seen_titles:
-                            valid_news.append(n)
-                            seen_titles.add(title)
-                
-                # If STILL nothing, take the first 3 items from all_news regardless of filter (better than empty)
-                if not valid_news and all_news:
-                    for n in all_news[:3]:
-                        title = n.get('title')
-                        if title and title not in seen_titles:
-                            valid_news.append(n)
-                            seen_titles.add(title)
+                logger.info("Sentiment strict filtering returned 0 items; using fallback headlines")
+                seen_titles = set()
+                for n in all_news:
+                    title = n.get('title') or n.get('text') or n.get('headline')
+                    if title and title not in seen_titles:
+                        valid_news.append(n)
+                        seen_titles.add(title)
+                    if len(valid_news) >= 5:
+                        break
+
+            logger.info("Sentiment filtered valid news count=%s", len(valid_news))
+            for idx, item in enumerate(valid_news[:5], start=1):
+                title = item.get('title') or item.get('text') or item.get('headline')
+                logger.info("Sentiment valid[%s]=%s", idx, title)
 
             analyzer = SentimentIntensityAnalyzer()
             
@@ -2569,12 +2606,18 @@ class SentimentAPIView(APIView):
             else:
                 label = "Neutral"
             
-            # Calculate a confidence score (0-100)
-            confidence = min(99.9, 50 + (abs(avg_compound) * 50))
+            # Calculate confidence using both sentiment strength and headline count.
+            confidence = min(99.9, 35 + (len(all_sentiments) * 12) + (abs(avg_compound) * 25))
 
             # Debug Logging
-            print(f"Average Compound Score: {avg_compound}")
-            print(f"Final Sentiment: {label} ({confidence}%)\n")
+            logger.info(
+                "Sentiment final stock=%s label=%s confidence=%s avg_compound=%s headlines_used=%s",
+                symbol,
+                label,
+                round(confidence, 1),
+                round(avg_compound, 4),
+                len(final_headlines),
+            )
 
             return Response({
                 "stock": symbol,

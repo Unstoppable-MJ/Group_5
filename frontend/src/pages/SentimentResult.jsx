@@ -5,6 +5,8 @@ import API from "../services/api";
 
 export default function SentimentResult() {
     const { portfolioId, stockSymbol } = useParams();
+    const decodedSymbol = decodeURIComponent(stockSymbol);
+    const displaySymbol = decodedSymbol.split(".")[0];
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -18,7 +20,7 @@ export default function SentimentResult() {
 
     useEffect(() => {
         setLoading(true);
-        API.post("sentiment/", { symbol: stockSymbol })
+        API.post("sentiment/", { symbol: decodedSymbol })
             .then((res) => {
                 setData(res.data);
                 console.log('res.data', res.data)
@@ -29,7 +31,7 @@ export default function SentimentResult() {
                 setError(err.response?.data?.error || "Analysis failed. Please try again.");
                 setLoading(false);
             });
-    }, [stockSymbol]);
+    }, [decodedSymbol]);
 
     const getSentimentColor = (sentiment) => {
         switch (sentiment) {
@@ -51,7 +53,7 @@ export default function SentimentResult() {
         setAiLoading(true);
         setAiError(null);
         API.post("ai-review/", {
-            stock: stockSymbol,
+            stock: decodedSymbol,
             sentiment: data?.sentiment,
             confidence: data?.confidence_score,
             headlines: data?.headlines,

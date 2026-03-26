@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: "https://chatsense.duckdns.org:8004/api/",
+  baseURL: "https://chatsense.duckdns.org/api/",
 });
 
 // Add a request interceptor to include the auth token

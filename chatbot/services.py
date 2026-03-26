@@ -47,7 +47,66 @@ def get_user_portfolio_context(user_id):
     except Exception as e:
         return f"Error fetching portfolio: {str(e)}"
 
-def get_chatbot_response(user_input: str, history: list = None, user_id: str = None, is_recommendation: bool = False):
+def get_current_portfolio_context(user_id, current_portfolio_id=None, current_portfolio_name=None, current_portfolio_type=None):
+    if not current_portfolio_id:
+        return "", ""
+
+    try:
+        portfolio = Portfolio.objects.filter(id=current_portfolio_id).first()
+        if not portfolio:
+            return "", ""
+
+        portfolio_type = current_portfolio_type or getattr(portfolio, "portfolio_type", "")
+        portfolio_name = current_portfolio_name or portfolio.name
+
+        context_lines = [f"Current Portfolio Focus: {portfolio_name}"]
+
+        portfolio_stocks = PortfolioStock.objects.filter(portfolio=portfolio).select_related("stock")
+        if portfolio_stocks.exists():
+            if user_id and portfolio.user_id and str(portfolio.user_id) != str(user_id):
+                return "", ""
+
+            if portfolio_type:
+                context_lines.append(f"Portfolio Type: {portfolio_type}")
+
+            sectors = sorted({ps.stock.sector for ps in portfolio_stocks if ps.stock and ps.stock.sector})
+            if sectors:
+                context_lines.append(f"Sectors in Focus: {', '.join(sectors)}")
+
+            context_lines.append("Holdings:")
+            for ps in portfolio_stocks:
+                context_lines.append(
+                    f"- {ps.stock.symbol} ({ps.stock.sector or 'Unknown Sector'}), Qty: {ps.quantity}, "
+                    f"Buy Price: {ps.buy_price}, Current Price: {ps.current_price}, P/E: {ps.pe_ratio}"
+                )
+            return "\n".join(context_lines), ", ".join(sectors)
+
+        # Sector portfolios may not have PortfolioStock rows yet, so infer the sector from the portfolio name.
+        sector_name = portfolio_name.replace(" Portfolio", "").strip()
+        sector_stocks = list(
+            Stock.objects.filter(sector__iexact=sector_name).order_by("symbol")[:25]
+        )
+        if sector_stocks:
+            context_lines.append("Sector-only Portfolio")
+            context_lines.append(f"Sector in Focus: {sector_name}")
+            context_lines.append("Relevant Stocks:")
+            for stock in sector_stocks:
+                context_lines.append(f"- {stock.symbol} ({stock.name})")
+            return "\n".join(context_lines), sector_name
+
+        return "\n".join(context_lines), ""
+    except Exception as e:
+        return f"Error fetching current portfolio: {str(e)}", ""
+
+def get_chatbot_response(
+    user_input: str,
+    history: list = None,
+    user_id: str = None,
+    is_recommendation: bool = False,
+    current_portfolio_id: str = None,
+    current_portfolio_name: str = None,
+    current_portfolio_type: str = None,
+):
     # Set up the LLM
     llm = ChatGoogleGenerativeAI(
         model="gemini-flash-latest",
@@ -56,13 +115,26 @@ def get_chatbot_response(user_input: str, history: list = None, user_id: str = N
 
     vector_store = get_vector_store()
     user_portfolio = get_user_portfolio_context(user_id)
+    current_portfolio_context, current_focus_sector = get_current_portfolio_context(
+        user_id,
+        current_portfolio_id=current_portfolio_id,
+        current_portfolio_name=current_portfolio_name,
+        current_portfolio_type=current_portfolio_type,
+    )
 
     # Define the retrieve node
     def retrieve(state: State):
         try:
             last_message = state["messages"][-1].content
             # For recommendations, we search for "top performing stocks" or "investment ideas"
-            query = "stock investment recommendations and market trends" if is_recommendation else last_message
+            if is_recommendation:
+                query = "stock investment recommendations and market trends"
+            else:
+                query = last_message
+
+            if current_focus_sector:
+                query = f"{query} focused on {current_focus_sector} sector stocks"
+
             docs = vector_store.similarity_search(query, k=5)
             context = "\n".join([doc.page_content for doc in docs])
             return {"context": context}
@@ -108,12 +180,16 @@ Use the general context for current market ideas.
 
 {model_comparison_info}
 
+CURRENT PAGE PORTFOLIO:
+{current_portfolio_context if current_portfolio_context else "No active portfolio page selected."}
+
 USER PORTFOLIO:
 {user_portfolio if user_portfolio else "No portfolio data (Guest)."}
 
 GENERAL CONTEXT:
 {state.get('context', 'No specific context found.')}
 
+If a CURRENT PAGE PORTFOLIO is provided, keep the recommendations restricted to that portfolio's sector or holdings unless the user explicitly asks to compare with other sectors.
 Provide 3-5 specific stock recommendations with brief rationales based on sectors, diversification, or recent trends found in the context.
 If the user is a guest, provide general top-performing sector recommendations.
 """
@@ -124,6 +200,9 @@ Also use the general context from our database if relevant.
 
 {model_comparison_info}
 
+CURRENT PAGE PORTFOLIO:
+{current_portfolio_context if current_portfolio_context else "No active portfolio page selected."}
+
 USER PORTFOLIO:
 {user_portfolio}
 
@@ -132,6 +211,8 @@ GENERAL CONTEXT:
 
 If the user asks about model accuracy or comparison, use the provided comparison info.
 If the user asks about their holdings, performance, or specific stocks they own, prioritize the USER PORTFOLIO data.
+If CURRENT PAGE PORTFOLIO is provided, answer primarily about that portfolio only.
+If it is a sector portfolio such as IT, keep the answer focused on stocks from that sector unless the user explicitly asks to broaden the scope.
 """
         else:
             system_prompt = f"""You are a helpful stock trading assistant. 
@@ -140,11 +221,15 @@ Use the following context from our database if relevant.
 
 {model_comparison_info}
 
+CURRENT PAGE PORTFOLIO:
+{current_portfolio_context if current_portfolio_context else "No active portfolio page selected."}
+
 CONTEXT:
 {state.get('context', 'No specific context found.')}
 
 If the user asks about model accuracy or comparison, use the provided comparison info.
 If the context doesn't contain the answer, use your general knowledge but mention that it's general knowledge.
+If CURRENT PAGE PORTFOLIO is provided, keep the answer focused on that portfolio or sector.
 Encourage the user to log in to see their personal portfolio analysis.
 """
         messages = [SystemMessage(content=system_prompt)] + state["messages"]

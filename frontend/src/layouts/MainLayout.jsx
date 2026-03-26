@@ -19,7 +19,7 @@ export default function MainLayout({ children, refreshData, portfolios, activePo
         <main className="flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full mt-4">
           {children}
         </main>
-        <Chatbot />
+        <Chatbot activePortfolio={activePortfolio} portfolios={portfolios} />
       </div>
     </div>
   );

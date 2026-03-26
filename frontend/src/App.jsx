@@ -30,6 +30,22 @@ const PortfolioSync = ({ setActivePortfolio }) => {
       if (id) {
         setActivePortfolio(id);
       }
+      return;
+    }
+
+    if (path.startsWith("/portfolio/")) {
+      const id = path.split("/")[2];
+      if (id) {
+        setActivePortfolio(id);
+      }
+      return;
+    }
+
+    if (path.startsWith("/sentiment/")) {
+      const id = path.split("/")[2];
+      if (id) {
+        setActivePortfolio(id);
+      }
     }
   }, [location, setActivePortfolio]);
 

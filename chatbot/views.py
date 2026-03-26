@@ -25,6 +25,9 @@ class ChatbotView(APIView):
         history = request.data.get('history', [])
         user_id = request.data.get('user_id')
         is_recommendation = request.data.get('recommendation', False)
+        current_portfolio_id = request.data.get('current_portfolio_id')
+        current_portfolio_name = request.data.get('current_portfolio_name')
+        current_portfolio_type = request.data.get('current_portfolio_type')
 
         if not user_input and not is_recommendation:
             return Response({'error': 'Message is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -34,7 +37,15 @@ class ChatbotView(APIView):
             user_input = "Please provide some stock recommendations for me."
 
         try:
-            bot_response = get_chatbot_response(user_input, history, user_id, is_recommendation)
+            bot_response = get_chatbot_response(
+                user_input,
+                history,
+                user_id,
+                is_recommendation,
+                current_portfolio_id=current_portfolio_id,
+                current_portfolio_name=current_portfolio_name,
+                current_portfolio_type=current_portfolio_type,
+            )
             
             # Save the message to the database
             user_obj = None

@@ -108,20 +108,23 @@ def get_chatbot_response(
     current_portfolio_name: str = None,
     current_portfolio_type: str = None,
 ):
-    # Set up the LLM
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-flash-latest",
-        google_api_key=settings.GEMINI_API_KEY
-    )
+    try:
+        # Set up the LLM
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-flash-latest",
+            google_api_key=settings.GEMINI_API_KEY
+        )
 
-    vector_store = get_vector_store()
-    user_portfolio = get_user_portfolio_context(user_id)
-    current_portfolio_context, current_focus_sector = get_current_portfolio_context(
-        user_id,
-        current_portfolio_id=current_portfolio_id,
-        current_portfolio_name=current_portfolio_name,
-        current_portfolio_type=current_portfolio_type,
-    )
+        vector_store = get_vector_store()
+        user_portfolio = get_user_portfolio_context(user_id)
+        current_portfolio_context, current_focus_sector = get_current_portfolio_context(
+            user_id,
+            current_portfolio_id=current_portfolio_id,
+            current_portfolio_name=current_portfolio_name,
+            current_portfolio_type=current_portfolio_type,
+        )
+    except Exception as e:
+        return f"I'm sorry, I couldn't initialize the chatbot services right now. Details: {str(e)}"
 
     # Define the retrieve node
     def retrieve(state: State):
@@ -294,7 +297,10 @@ Encourage the user to log in to see their personal portfolio analysis.
     messages.append(HumanMessage(content=user_input))
 
     # Run the graph
-    final_state = app.invoke({"messages": messages})
+    try:
+        final_state = app.invoke({"messages": messages})
+    except Exception as e:
+        return f"I'm sorry, I encountered an error while generating a response. Details: {str(e)}"
     
     content = final_state["messages"][-1].content
     if isinstance(content, list):

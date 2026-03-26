@@ -18,6 +18,8 @@ jobs:
         with:
           host: ${{ secrets.AZURE_HOST }}
           username: ${{ secrets.AZURE_USER }}
-          key: ${{ secrets.AZURE_SSH_KEY }}
+          password: ${{ secrets.AZURE_PASSWORD }}
+          port: 22
           script: |
+            echo "Connected successfully"
             ~/deploy.sh

@@ -30,13 +30,21 @@ def get_safe_pe_ratio(symbol, t=None):
         if t is None:
             t = yf.Ticker(symbol)
         
+        pe = None
         # 1. Check fast_info first (faster, less prone to blocking)
-        pe = t.fast_info.get('trailing_pe', t.fast_info.get('forward_pe'))
-        
+        try:
+            pe = t.fast_info.get('trailing_pe', t.fast_info.get('forward_pe'))
+        except Exception:
+            # fast_info often raises JSONDecodeError if Yahoo blocks or changes format
+            pass
+            
         # 2. Fallback to info if fast_info fails (more comprehensive but slower)
         if pe is None:
-            info = t.info
-            pe = info.get('trailingPE', info.get('forwardPE'))
+            try:
+                info = t.info
+                pe = info.get('trailingPE', info.get('forwardPE'))
+            except Exception:
+                pass
         
         if pe is not None:
             val = float(pe)
@@ -47,7 +55,7 @@ def get_safe_pe_ratio(symbol, t=None):
             cache.set(cache_key, -1, 3600)
             return None
     except Exception as e:
-        print(f"Error fetching PE for {symbol}: {e}")
+        # Silently fail to avoid cluttering the console during batch syncs
         return None
 
 def get_batch_stock_data(symbols, period="1y", use_cache=True):
@@ -353,10 +361,62 @@ def get_builtin_portfolio_stocks(portfolio_id):
         return []
 
     try:
+        # 🚀 Fetch live prices ONLY for this portfolio's stocks
+        fetched_prices = {}
+        fetched_max_prices = {}
+        if symbols:
+            try:
+                # Optimized batch download, using 1y to compute 52W max
+                data = yf.download(symbols, period="1y", group_by="ticker", threads=False, progress=False)
+                for symbol in symbols:
+                    try:
+                        ticker_df = None
+                        if len(symbols) == 1:
+                            ticker_df = data
+                        else:
+                            if symbol in data.columns.levels[0]:
+                                ticker_df = data[symbol].dropna(subset=['Close'])
+                        
+                        if ticker_df is not None and not ticker_df.empty:
+                            price = float(ticker_df['Close'].iloc[-1])
+                            max_p = float(ticker_df['High'].max())
+                            if price > 0:
+                                fetched_prices[symbol] = price
+                                fetched_max_prices[symbol] = max_p
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Refreshed builtin data fetch failed: {e}")
+
         all_processed = []
         for symbol in symbols:
             # Query the StockData cache instead of the API
             db_data = StockData.objects.filter(symbol=symbol).first()
+            
+            # Apply freshly fetched price if available
+            if symbol in fetched_prices:
+                new_price = fetched_prices[symbol]
+                new_max = fetched_max_prices.get(symbol)
+                if not db_data:
+                    db_data, _ = StockData.objects.update_or_create(
+                        symbol=symbol,
+                        defaults={
+                            "current_price": new_price,
+                            "max_price_52w": new_max,
+                            "company_name": names_map.get(symbol, symbol),
+                            "last_sync": timezone.now()
+                        }
+                    )
+                else:
+                    changed = False
+                    if db_data.current_price != new_price:
+                        db_data.current_price = new_price
+                        changed = True
+                    if new_max and db_data.max_price_52w != new_max:
+                        db_data.max_price_52w = new_max
+                        changed = True
+                    if changed:
+                        db_data.save()
             
             current_price = db_data.current_price if db_data else None
             max_price = db_data.max_price_52w if db_data else None
@@ -736,23 +796,70 @@ class StockListAPIView(APIView):
         try:
             p_obj = Portfolio.objects.get(id=portfolio_id)
             if p_obj.portfolio_type == 'ai_builtin' and p_obj.name.endswith(" Portfolio"):
+                from .views import get_sector_portfolio_stocks # Ensure lazy import if needed
                 stocks_data = get_sector_portfolio_stocks(portfolio_id)
                 return Response(stocks_data)
         except:
             pass
 
         if portfolio_id and portfolio_id != "all":
-            stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id)
+            stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
         else:
-            stocks = PortfolioStock.objects.all()
+            stocks = PortfolioStock.objects.all().select_related('stock')
 
-        # Dynamically recalculate legacy stocks to ensure they display correctly
+        # 🚀 Fetch live prices ONLY for this portfolio's stocks
+        symbols = [ps.stock.symbol for ps in stocks]
+        fetched_prices = {}
+        fetched_max_prices = {}
+        if symbols:
+            try:
+                # Optimized batch download, using 1y to get 52-week High
+                data = yf.download(symbols, period="1y", group_by="ticker", threads=False, progress=False)
+                for symbol in symbols:
+                    try:
+                        ticker_df = None
+                        if len(symbols) == 1:
+                            ticker_df = data
+                        else:
+                            if symbol in data.columns.levels[0]:
+                                ticker_df = data[symbol].dropna(subset=['Close'])
+                        
+                        if ticker_df is not None and not ticker_df.empty:
+                            price = float(ticker_df['Close'].iloc[-1])
+                            max_p = float(ticker_df['High'].max())
+                            if price > 0:
+                                fetched_prices[symbol] = price
+                                fetched_max_prices[symbol] = max_p
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Refreshed portfolio data fetch failed: {e}")
+
+        # Dynamically recalculate legacy stocks and apply fetched prices
         for stock in stocks:
+            needs_save = False
+            
+            # Apply freshly fetched price if available
+            symbol = stock.stock.symbol
+            if symbol in fetched_prices:
+                new_price = fetched_prices[symbol]
+                new_max = fetched_max_prices.get(symbol)
+                if stock.current_price != new_price:
+                    stock.current_price = new_price
+                    needs_save = True
+                if new_max and stock.max_price != new_max:
+                    stock.max_price = new_max
+                    needs_save = True
+
             disc, opp = calculate_stock_metrics(stock.current_price, stock.max_price, stock.pe_ratio)
+            
             # Update values if they differ to auto-correct old records
-            if abs(float(stock.discount_level) - disc) > 0.01 or abs(float(stock.opportunity) - opp) > 0.01:
+            if abs(float(stock.discount_level or 0) - disc) > 0.01 or abs(float(stock.opportunity or 0) - opp) > 0.01:
                 stock.discount_level = disc
                 stock.opportunity = opp
+                needs_save = True
+                
+            if needs_save:
                 stock.save()
 
         serializer = StockListSerializer(stocks, many=True)
@@ -987,9 +1094,6 @@ class PortfolioGrowthAPIView(APIView):
         try:
             # Safely fetch 1 month of historical close prices using chunked batching
             batch_data = get_batch_stock_data(symbols, period="1mo", use_cache=True)
-            # Download 1 month of historical close prices for all unique symbols
-            import pandas as pd
-            data = yf.download(symbols, period="1mo", interval="1d", group_by='ticker', progress=False)
 
             day_map = {}
             dates_ordered = []
@@ -1009,6 +1113,8 @@ class PortfolioGrowthAPIView(APIView):
                     continue
 
             dates_ordered.sort()
+            # Constrain to 30 days as per UI title "30-Day Investment"
+            dates_ordered = dates_ordered[-30:]
             growth_data = []
 
             for date_str in dates_ordered:
@@ -1098,7 +1204,8 @@ class MultiStockHistoryAPIView(APIView):
 
                 if ticker_df is not None and not ticker_df.empty:
                     try:
-                        for date, row in ticker_df.iterrows():
+                        # Limit to last 30 trading days for UI consistency
+                        for date, row in ticker_df.tail(30).iterrows():
                             symbol_data.append({
                                 "date": date.strftime("%Y-%m-%d"),
                                 "close": round(float(row['Close']), 2)
@@ -2785,9 +2892,34 @@ def get_sector_portfolio_stocks(portfolio_id):
 
     # 2. Fetch all corresponding data from the StockData cache table in one query
     stocks_data = StockData.objects.filter(symbol__in=symbols_in_sector)
-    
-    # Create a lookup map for quick access
     data_map = {s.symbol: s for s in stocks_data}
+
+    # 🚀 Fetch live prices ONLY for this portfolio's stocks
+    fetched_prices = {}
+    fetched_max_prices = {}
+    if symbols_in_sector:
+        try:
+            # Optimized batch download, using 1y to compute 52W max
+            data = yf.download(symbols_in_sector, period="1y", group_by="ticker", threads=False, progress=False)
+            for symbol in symbols_in_sector:
+                try:
+                    ticker_df = None
+                    if len(symbols_in_sector) == 1:
+                        ticker_df = data
+                    else:
+                        if symbol in data.columns.levels[0]:
+                            ticker_df = data[symbol].dropna(subset=['Close'])
+                    
+                    if ticker_df is not None and not ticker_df.empty:
+                        price = float(ticker_df['Close'].iloc[-1])
+                        max_p = float(ticker_df['High'].max())
+                        if price > 0:
+                            fetched_prices[symbol] = price
+                            fetched_max_prices[symbol] = max_p
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Refreshed sector data fetch failed: {e}")
 
     all_processed = []
     # 3. Iterate through the symbols to ensure all stocks from the sector are included
@@ -2795,29 +2927,30 @@ def get_sector_portfolio_stocks(portfolio_id):
         try:
             db_data = data_map.get(symbol)
             
-            # If data is missing from StockData, try to fetch it once on the fly
-            if not db_data:
-                try:
-                    ticker = yf.Ticker(symbol)
-                    ticker_df = ticker.history(period="5d")
-                    if not ticker_df.empty:
-                        price = float(ticker_df['Close'].iloc[-1])
-                        max_52w = float(ticker_df['High'].max()) # Simplified for on-the-fly
-                        pe = get_safe_pe_ratio(symbol, ticker)
-                        
-                        db_data, _ = StockData.objects.update_or_create(
-                            symbol=symbol,
-                            defaults={
-                                "current_price": price,
-                                "pe_ratio": pe,
-                                "max_price_52w": max_52w,
-                                "company_name": symbol,
-                                "last_sync": timezone.now()
-                            }
-                        )
-                except Exception:
-                    pass
-
+            # Apply freshly fetched price if available
+            if symbol in fetched_prices:
+                new_price = fetched_prices[symbol]
+                new_max = fetched_max_prices.get(symbol)
+                if not db_data:
+                    db_data, _ = StockData.objects.update_or_create(
+                        symbol=symbol,
+                        defaults={
+                            "current_price": new_price,
+                            "max_price_52w": new_max,
+                            "company_name": symbol,
+                            "last_sync": timezone.now()
+                        }
+                    )
+                else:
+                    changed = False
+                    if db_data.current_price != new_price:
+                        db_data.current_price = new_price
+                        changed = True
+                    if new_max and db_data.max_price_52w != new_max:
+                        db_data.max_price_52w = new_max
+                        changed = True
+                    if changed:
+                        db_data.save()
             # If data exists but PE is null, try to fetch it once on the fly
             pe_val = db_data.pe_ratio if db_data else None
             if db_data and pe_val is None:

@@ -1,4 +1,5 @@
 import os
+import re
 from django.conf import settings
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
@@ -173,6 +174,32 @@ ChatSense uses four main categories of prediction models. Here is a comparison o
 *Accuracy is measured using MAPE (Mean Absolute Percentage Error) subtracted from 100% during backtesting on historical data.*
 """
 
+        FORMATTING_RULES = """
+FORMATTING AND STRUCTURE RULES:
+1. Start with a brief, professional introduction (2-3 lines).
+2. For each stock recommendation, follow this EXACT Markdown structure:
+   ## 1. Stock Name (Ticker)
+   
+   **Sector:**
+   [Identify the sector]
+   
+   **Model Fit:**
+   [Provide a brief model or prediction insight]
+   
+   **Rationale:**
+   [2-3 lines explaining the fit for the portfolio]
+   
+   (Ensure a blank line exists between each stock section)
+3. End with a concise summary (2-3 lines) explaining the overall strategy alignment.
+4. General Style:
+   - Use bold for labels: **Sector:**, **Model Fit:**, **Rationale:**.
+   - Use Markdown headings (##) for stock titles.
+   - Keep each explanation segment to 3-4 lines maximum.
+   - Avoid long, dense paragraphs. 
+   - Use bullet points for lists if necessary.
+   - Tone: Professional, advisor-like, clear, and concise.
+"""
+
         if is_recommendation:
             system_prompt = f"""You are a stock market expert providing personalized recommendations.
 Use the user's current portfolio (if available) to suggest complementary stocks or adjustments.
@@ -192,6 +219,8 @@ GENERAL CONTEXT:
 If a CURRENT PAGE PORTFOLIO is provided, keep the recommendations restricted to that portfolio's sector or holdings unless the user explicitly asks to compare with other sectors.
 Provide 3-5 specific stock recommendations with brief rationales based on sectors, diversification, or recent trends found in the context.
 If the user is a guest, provide general top-performing sector recommendations.
+
+{FORMATTING_RULES}
 """
         elif is_logged_in:
             system_prompt = f"""You are a helpful stock trading assistant for a logged-in user.
@@ -213,6 +242,8 @@ If the user asks about model accuracy or comparison, use the provided comparison
 If the user asks about their holdings, performance, or specific stocks they own, prioritize the USER PORTFOLIO data.
 If CURRENT PAGE PORTFOLIO is provided, answer primarily about that portfolio only.
 If it is a sector portfolio such as IT, keep the answer focused on stocks from that sector unless the user explicitly asks to broaden the scope.
+
+{FORMATTING_RULES if is_recommendation else ""}
 """
         else:
             system_prompt = f"""You are a helpful stock trading assistant. 
@@ -268,5 +299,47 @@ Encourage the user to log in to see their personal portfolio analysis.
     content = final_state["messages"][-1].content
     if isinstance(content, list):
         # Extract text from content blocks if it's a list
-        return "".join([block["text"] if isinstance(block, dict) and "text" in block else str(block) for block in content])
-    return content
+        final_text = "".join([block["text"] if isinstance(block, dict) and "text" in block else str(block) for block in content])
+    else:
+        final_text = content
+    
+    return format_chatbot_response(final_text)
+
+def format_chatbot_response(text):
+    """
+    Cleans and formats chatbot responses for better readability.
+    Handles OCR-style messy text, MCQ options, and general spacing.
+    If Markdown structure is already present, it trusts and preserves it.
+    """
+    if not text:
+        return ""
+    
+    # 1. Basic cleanup: Normalize whitespace
+    text = text.strip()
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\r\n|\r', '\n', text)
+    
+    # 2. If Markdown structure (headings or bold) exists, we trust it and just normalize newlines.
+    if "##" in text or "**" in text:
+        return re.sub(r'\n{3,}', '\n\n', text).strip()
+    
+    # 3. OCR Cleaning: Add dots where missing for numbered lists and options
+    # Matches "1 " but not "1." at start or after space, followed by an uppercase letter
+    text = re.sub(r'(^|\s)(\d+)\b\s+([A-Z])', r'\1\2. \3', text)
+    # Matches " A " but not " A." 
+    text = re.sub(r'(^|\s)\b([A-D])\b\s+', r'\1\2. ', text)
+    
+    # 4. Inject newlines before questions and options
+    # Double newline before "1. ", "2. ", etc. (for paragraph spacing)
+    text = re.sub(r'\s*(\d+\.\s+)', r'\n\n\1', text)
+    # Single newline before "A. ", "B. ", etc. (to group with question)
+    text = re.sub(r'\s*([A-D]\.\s*)', r'\n\1', text)
+    
+    # 5. Add double newlines after sentences but avoid breaking list markers
+    # Negative lookbehind ensures we don't break "1. " or "A. "
+    text = re.sub(r'(?<!\d)(?<!\b[A-D])([.?!:])\s+', r'\1\n\n', text)
+    
+    # 6. Final cleanup: Standardize multiple newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()

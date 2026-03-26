@@ -1,0 +1,16 @@
+[nltk_data] Downloading package vader_lexicon to
+[nltk_data]     C:\Users\Ganeshjoshi\AppData\Roaming\nltk_data...
+[nltk_data]   Package vader_lexicon is already up-to-date!
+Testing RELIANCE.NS (Reliance Industries)...
+Raw news count: 18
+No sentiments found.
+Testing TCS.NS (Tata Consultancy Services)...
+Raw news count: 18
+No sentiments found.
+Testing IRB.NS (IRB Infrastructure)...
+Raw news count: 10
+Result: 0.0000 score, 71.0% confidence
+--------------------
+Testing AAPL (Apple Inc.)...
+Raw news count: 18
+No sentiments found.

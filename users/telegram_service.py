@@ -1,12 +1,15 @@
+import logging
 import requests
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 class TelegramService:
     @staticmethod
     def send_message(chat_id, text, reply_markup=None):
         token = getattr(settings, 'TELEGRAM_BOT_TOKEN', None)
         if not token:
-            print("TELEGRAM_BOT_TOKEN is not configured in settings.py")
+            logger.error("TELEGRAM_BOT_TOKEN is not configured in settings.py")
             return False
         
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -18,10 +21,17 @@ class TelegramService:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         try:
-            response = requests.post(url, json=payload)
+            logger.info("Sending Telegram message to chat_id=%s", chat_id)
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code != 200:
+                logger.error(
+                    "Telegram sendMessage failed: status=%s body=%s",
+                    response.status_code,
+                    response.text,
+                )
             return response.status_code == 200
         except Exception as e:
-            print(f"Error sending Telegram message: {e}")
+            logger.exception("Error sending Telegram message: %s", e)
             return False
 
     @classmethod

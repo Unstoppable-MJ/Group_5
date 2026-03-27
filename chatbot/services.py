@@ -20,7 +20,7 @@ class State(TypedDict):
 def get_vector_store():
     embeddings = GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001",
-        google_api_key=settings.GEMINI_API_KEY
+        api_key=settings.GEMINI_API_KEY
     )
     persist_directory = os.path.join(settings.BASE_DIR, "chromadb_data")
     return Chroma(
@@ -109,10 +109,14 @@ def get_chatbot_response(
     current_portfolio_type: str = None,
 ):
     try:
+        api_key = getattr(settings, "GEMINI_API_KEY", None)
+        if not api_key:
+            return "Chatbot is temporarily unavailable because the Gemini API key is not configured on the server."
+
         # Set up the LLM
         llm = ChatGoogleGenerativeAI(
             model="gemini-flash-latest",
-            google_api_key=settings.GEMINI_API_KEY
+            api_key=api_key
         )
 
         vector_store = get_vector_store()
@@ -123,8 +127,8 @@ def get_chatbot_response(
             current_portfolio_name=current_portfolio_name,
             current_portfolio_type=current_portfolio_type,
         )
-    except Exception as e:
-        return f"I'm sorry, I couldn't initialize the chatbot services right now. Details: {str(e)}"
+    except Exception:
+        return "I'm sorry, I couldn't initialize the chatbot services right now."
 
     # Define the retrieve node
     def retrieve(state: State):
@@ -299,8 +303,8 @@ Encourage the user to log in to see their personal portfolio analysis.
     # Run the graph
     try:
         final_state = app.invoke({"messages": messages})
-    except Exception as e:
-        return f"I'm sorry, I encountered an error while generating a response. Details: {str(e)}"
+    except Exception:
+        return "I'm sorry, I encountered an error while generating a response."
     
     content = final_state["messages"][-1].content
     if isinstance(content, list):

@@ -14,11 +14,11 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from the project root .env file explicitly.
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -139,8 +139,8 @@ STATIC_URL = 'static/'
 CORS_ALLOW_ALL_ORIGINS = True
 
 # AI Review Configuration (Gemini API)
-# IMPORTANT: Replace this with your actual Gemini API Key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Accept either GEMINI_API_KEY or GOOGLE_API_KEY so deployment envs are easier to wire.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

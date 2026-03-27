@@ -111,7 +111,9 @@ export default function PortfolioDetails({ activePortfolio }) {
         if (selectedSymbol) {
             let isMounted = true;
             setLoadingPreview(true);
-            API.get(`stock-preview/?symbol=${selectedSymbol}`)
+            API.get(
+                `stock-preview/?symbol=${encodeURIComponent(selectedSymbol)}&portfolio_id=${encodeURIComponent(activePortfolio)}`
+            )
                 .then((res) => {
                     if (isMounted) {
                         setPreview(res.data);
@@ -128,7 +130,7 @@ export default function PortfolioDetails({ activePortfolio }) {
         } else {
             setPreview(null);
         }
-    }, [selectedSymbol]);
+    }, [selectedSymbol, activePortfolio]);
 
     // 4. Fetch portfolio-wide history for Performance Grid charts
     useEffect(() => {

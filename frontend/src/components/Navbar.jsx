@@ -196,8 +196,8 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
             whileTap={{ scale: 0.95 }}
             onClick={() => navigate('/portfolios')}
             className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-sm font-semibold transition-all shadow-sm ${location.pathname === '/portfolios'
-                ? 'bg-blue-600 border-blue-500 text-white shadow-blue-500/20'
-                : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+              ? 'bg-blue-600 border-blue-500 text-white shadow-blue-500/20'
+              : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
           >
             <span className="text-base">💼</span>
@@ -209,8 +209,8 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
             whileTap={{ scale: 0.95 }}
             onClick={() => navigate('/sentiment')}
             className={`flex items-center gap-2 px-4 py-2 border rounded-xl text-sm font-semibold transition-all shadow-sm ${location.pathname.startsWith('/sentiment')
-                ? 'bg-indigo-600 border-indigo-500 text-white shadow-indigo-500/20'
-                : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+              ? 'bg-indigo-600 border-indigo-500 text-white shadow-indigo-500/20'
+              : 'bg-slate-800/50 border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
               }`}
           >
             <span className="text-base">🎭</span>
@@ -258,7 +258,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
               onClick={() => navigate(`/quality-check/${activePortfolio}`)}
               className="text-slate-950 bg-gradient-to-r from-amber-300 to-yellow-200 border border-amber-200 font-semibold px-4 py-2 rounded-xl text-sm flex items-center gap-2 shadow-[0_0_15px_rgba(251,191,36,0.18)]"
             >
-              <span>✓</span> <span className="hidden sm:inline">Quality Check</span>
+              <span>✓</span> <span className="hidden sm:inline">Quality Analysis</span>
             </motion.button>
           )}
 

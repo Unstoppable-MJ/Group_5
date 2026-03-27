@@ -58,7 +58,7 @@ export default function QualityCheck() {
             </svg>
             Back to Portfolio
           </button>
-          <h1 className="text-4xl font-black tracking-tight text-white">Quality Check</h1>
+          <h1 className="text-4xl font-black tracking-tight text-white">Quality Analysis</h1>
           <p className="text-slate-400 mt-2 max-w-3xl">
             This page ranks your portfolio’s strongest 3 stocks using a realistic composite of valuation
             quality, discount from highs, news sentiment, and cluster strength. The scoring workflow is

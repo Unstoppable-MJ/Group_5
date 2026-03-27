@@ -166,10 +166,10 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
         initial={{ y: -20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         style={{ background: "#0b1220", borderBottom: "1px solid rgba(255,255,255,0.08)" }}
-        className="sticky top-0 z-40 w-full px-6 py-4 flex justify-between items-center"
+        className="sticky top-0 z-40 w-full px-6 py-4 flex items-center justify-between"
       >
         {/* Left: Logo */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-emerald-400 rounded-xl flex items-center justify-center shadow-inner">
             <span className="text-xl">📊</span>
           </div>
@@ -190,7 +190,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
         </div>
 
         {/* Center: Desktop Navigation */}
-        <div className="hidden md:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 items-center gap-4">
+        <div className="hidden md:flex flex-1 justify-center items-center gap-4 min-w-0">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -219,7 +219,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
         </div>
 
         {/* Right: Actions and User Menu */}
-        <div className="flex items-center gap-4 sm:gap-6">
+        <div className="flex items-center justify-end gap-4 sm:gap-6 flex-1 min-w-0">
           {/* Mobile Navigation Icons */}
           <div className="flex md:hidden items-center gap-2">
             <motion.button

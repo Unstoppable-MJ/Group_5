@@ -183,8 +183,10 @@ ChatSense uses four main categories of prediction models. Here is a comparison o
 
         FORMATTING_RULES = """
 FORMATTING AND STRUCTURE RULES:
-1. Start with a brief, professional introduction (2-3 lines).
-2. For each stock recommendation, follow this EXACT Markdown structure:
+1. Make the response visually readable with short paragraphs and clear spacing.
+2. Use a few relevant emojis naturally where they improve readability, such as 📈, 📉, ✅, ⚠️, 💡, or 🔎. Do not overuse them.
+3. Start with a brief, professional introduction (2-3 lines).
+4. For each stock recommendation, follow this EXACT Markdown structure:
    ## 1. Stock Name (Ticker)
    
    **Sector:**
@@ -197,14 +199,15 @@ FORMATTING AND STRUCTURE RULES:
    [2-3 lines explaining the fit for the portfolio]
    
    (Ensure a blank line exists between each stock section)
-3. End with a concise summary (2-3 lines) explaining the overall strategy alignment.
-4. General Style:
+5. End with a concise summary (2-3 lines) explaining the overall strategy alignment.
+6. General Style:
    - Use bold for labels: **Sector:**, **Model Fit:**, **Rationale:**.
    - Use Markdown headings (##) for stock titles.
    - Keep each explanation segment to 3-4 lines maximum.
    - Avoid long, dense paragraphs. 
    - Use bullet points for lists if necessary.
-   - Tone: Professional, advisor-like, clear, and concise.
+   - Add blank lines between paragraphs and sections.
+   - Tone: Professional, advisor-like, clear, concise, and friendly.
 """
 
         if is_recommendation:
@@ -250,7 +253,7 @@ If the user asks about their holdings, performance, or specific stocks they own,
 If CURRENT PAGE PORTFOLIO is provided, answer primarily about that portfolio only.
 If it is a sector portfolio such as IT, keep the answer focused on stocks from that sector unless the user explicitly asks to broaden the scope.
 
-{FORMATTING_RULES if is_recommendation else ""}
+{FORMATTING_RULES}
 """
         else:
             system_prompt = f"""You are a helpful stock trading assistant. 
@@ -269,6 +272,8 @@ If the user asks about model accuracy or comparison, use the provided comparison
 If the context doesn't contain the answer, use your general knowledge but mention that it's general knowledge.
 If CURRENT PAGE PORTFOLIO is provided, keep the answer focused on that portfolio or sector.
 Encourage the user to log in to see their personal portfolio analysis.
+
+{FORMATTING_RULES}
 """
         messages = [SystemMessage(content=system_prompt)] + state["messages"]
         try:
@@ -351,5 +356,6 @@ def format_chatbot_response(text):
     
     # 6. Final cleanup: Standardize multiple newlines
     text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'([.?!])([A-Z])', r'\1 \2', text)
     
     return text.strip()

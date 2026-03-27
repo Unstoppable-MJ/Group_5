@@ -23,7 +23,6 @@ export default function SentimentResult() {
         API.post("sentiment/", { symbol: decodedSymbol })
             .then((res) => {
                 setData(res.data);
-                console.log('res.data', res.data)
                 setLoading(false);
             })
             .catch((err) => {
@@ -55,7 +54,7 @@ export default function SentimentResult() {
         API.post("ai-review/", {
             stock: decodedSymbol,
             sentiment: data?.sentiment,
-            confidence: data?.confidence_score,
+            confidence: data?.confidence,
             headlines: data?.headlines,
             score: data?.score
         })

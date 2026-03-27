@@ -151,6 +151,7 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
   const [showUserMenu, setShowUserMenu] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const showQualityCheck = location.pathname.startsWith('/portfolio/') && !!activePortfolio;
 
   const userName = localStorage.getItem("username") || "User";
 
@@ -249,6 +250,17 @@ export default function Navbar({ refreshData, portfolios, activePortfolio, setAc
           >
             <span>+</span> <span className="hidden sm:inline">Portfolio</span>
           </motion.button>
+
+          {showQualityCheck && (
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => navigate(`/quality-check/${activePortfolio}`)}
+              className="text-slate-950 bg-gradient-to-r from-amber-300 to-yellow-200 border border-amber-200 font-semibold px-4 py-2 rounded-xl text-sm flex items-center gap-2 shadow-[0_0_15px_rgba(251,191,36,0.18)]"
+            >
+              <span>✓</span> <span className="hidden sm:inline">Quality Check</span>
+            </motion.button>
+          )}
 
           <motion.button
             whileHover={{ scale: 1.03 }}

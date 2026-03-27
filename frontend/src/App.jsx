@@ -15,6 +15,7 @@ import PortfolioSelect from "./pages/PortfolioSelect";
 import SentimentPortfolioSelect from "./pages/SentimentPortfolioSelect";
 import SentimentStockSelect from "./pages/SentimentStockSelect";
 import SentimentResult from "./pages/SentimentResult";
+import QualityCheck from "./pages/QualityCheck";
 import MainLayout from "./layouts/MainLayout";
 import { useState, useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
@@ -42,6 +43,14 @@ const PortfolioSync = ({ setActivePortfolio }) => {
     }
 
     if (path.startsWith("/sentiment/")) {
+      const id = path.split("/")[2];
+      if (id) {
+        setActivePortfolio(id);
+      }
+      return;
+    }
+
+    if (path.startsWith("/quality-check/")) {
       const id = path.split("/")[2];
       if (id) {
         setActivePortfolio(id);
@@ -218,6 +227,16 @@ function App() {
           element={
             <ProtectedRoute>
               <Welcome />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/quality-check/:portfolioId"
+          element={
+            <ProtectedRoute>
+              <MainLayout portfolios={portfolios} activePortfolio={activePortfolio} setActivePortfolio={setActivePortfolio} refreshData={refreshData} fetchPortfolios={fetchPortfolios}>
+                <QualityCheck />
+              </MainLayout>
             </ProtectedRoute>
           }
         />

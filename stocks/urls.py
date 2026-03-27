@@ -11,6 +11,7 @@ from .views import (
     PortfolioStockDetailAPIView,
     StockPredictionAPIView,
     StockClusteringAPIView,
+    QualityCheckAPIView,
     PortfolioGrowthAPIView, # Added PortfolioGrowthAPIView
     Nifty50PCAAPIView,
     PreciousMetalsAPIView,
@@ -38,6 +39,7 @@ urlpatterns = [
     path('portfolio-history/', MultiStockHistoryAPIView.as_view()),
     path('stock-prediction/', StockPredictionAPIView.as_view()),
     path('stock-clustering/', StockClusteringAPIView.as_view()),
+    path('quality-check/', QualityCheckAPIView.as_view()),
     path('portfolio-growth/', PortfolioGrowthAPIView.as_view()), # Registered PortfolioGrowthAPIView
     path('nifty50-pca/', Nifty50PCAAPIView.as_view()),
     path('precious-metals/', PreciousMetalsAPIView.as_view()),

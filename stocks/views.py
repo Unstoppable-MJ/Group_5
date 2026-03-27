@@ -138,6 +138,7 @@ from .models import Stock, PortfolioStock, StockData
 from portfolio.models import Portfolio
 from users.models import UserProfile
 from .serializers import AddStockSerializer, StockListSerializer
+from .quality_service import run_quality_check
 
 import concurrent.futures
 import numpy as np
@@ -1164,6 +1165,22 @@ class PortfolioGrowthAPIView(APIView):
 
         except Exception as e:
             return Response({"error": str(e)}, status=400)
+
+
+class QualityCheckAPIView(APIView):
+    def get(self, request):
+        portfolio_id = request.GET.get("portfolio_id")
+        if not portfolio_id:
+            return Response({"error": "portfolio_id required"}, status=400)
+
+        try:
+            result = run_quality_check(portfolio_id)
+            return Response(result)
+        except Portfolio.DoesNotExist:
+            return Response({"error": "Portfolio not found"}, status=404)
+        except Exception as e:
+            logger.exception("Quality check failed for portfolio_id=%s", portfolio_id)
+            return Response({"error": str(e)}, status=500)
 
 
 # -----------------------------
@@ -2774,7 +2791,6 @@ class AIReviewView(APIView):
         confidence = request.data.get("confidence", "Unknown")
 
         try:
-            # Configure Gemini
             api_key = getattr(settings, "GEMINI_API_KEY", None)
             if not api_key or api_key == "YOUR_API_KEY_HERE":
                 return Response({
@@ -2784,8 +2800,7 @@ class AIReviewView(APIView):
                     "recommendation": "N/A"
                 }, status=200)
 
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-flash-latest')
+            client = genai.Client(api_key=api_key)
 
             # Build headlines string for prompt
             headlines_list = request.data.get("headlines", [])
@@ -2814,21 +2829,45 @@ class AIReviewView(APIView):
             Keep the response concise and human-like.
             """
 
-            response = model.generate_content(prompt)
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
             
             # Extract JSON from response text (Gemini sometimes wraps in backticks)
             import json
             import re
             
-            text = response.text
+            text = getattr(response, "text", None) or ""
+            if not text and hasattr(response, "candidates") and response.candidates:
+                parts = []
+                for candidate in response.candidates:
+                    content = getattr(candidate, "content", None)
+                    if not content:
+                        continue
+                    for part in getattr(content, "parts", []):
+                        part_text = getattr(part, "text", None)
+                        if part_text:
+                            parts.append(part_text)
+                text = "\n".join(parts).strip()
+
             json_match = re.search(r'\{.*\}', text, re.DOTALL)
             if json_match:
-                data = json.loads(json_match.group())
+                try:
+                    data = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    data = {
+                        "stock": stock_symbol,
+                        "analysis": text or "Automated analysis completed.",
+                        "risk": "Medium",
+                        "recommendation": "Hold",
+                        "reasoning": "The model returned a partially structured response, so a fallback summary was used."
+                    }
             else:
                 # Fallback if parsing fails
                 data = {
                     "stock": stock_symbol,
-                    "analysis": text,
+                    "analysis": text or "Automated analysis completed.",
                     "risk": "Medium",
                     "recommendation": "Hold",
                     "reasoning": "Automated analysis completed."

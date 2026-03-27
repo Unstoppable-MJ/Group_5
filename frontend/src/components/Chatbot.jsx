@@ -1,6 +1,54 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import API from '../services/api';
 
+const renderInlineFormatting = (text) => {
+  const parts = text.split(/(\*\*.*?\*\*)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return <React.Fragment key={index}>{part}</React.Fragment>;
+  });
+};
+
+const renderAssistantMessage = (content) => {
+  const blocks = String(content)
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="space-y-3 leading-7">
+      {blocks.map((block, index) => {
+        if (block.startsWith('## ')) {
+          return (
+            <h4 key={index} className="text-base font-bold text-slate-900">
+              {renderInlineFormatting(block.replace(/^##\s*/, ''))}
+            </h4>
+          );
+        }
+
+        if (/^[-*]\s+/.test(block)) {
+          const items = block.split('\n').map((line) => line.replace(/^[-*]\s+/, '').trim()).filter(Boolean);
+          return (
+            <ul key={index} className="space-y-2 pl-5 list-disc text-sm text-slate-700">
+              {items.map((item, itemIndex) => (
+                <li key={itemIndex}>{renderInlineFormatting(item)}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={index} className="text-[15px] text-slate-700 whitespace-pre-wrap">
+            {renderInlineFormatting(block)}
+          </p>
+        );
+      })}
+    </div>
+  );
+};
+
 const Chatbot = ({ activePortfolio, portfolios = [] }) => {
   const accentColor = 'oklch(84.5% 0.143 164.978)';
   const [isOpen, setIsOpen] = useState(false);
@@ -124,7 +172,7 @@ const Chatbot = ({ activePortfolio, portfolios = [] }) => {
                       : 'bg-white text-gray-800 border border-gray-200 rounded-bl-none shadow-sm'
                   }`}
                 >
-                  {msg.content}
+                  {msg.role === 'assistant' ? renderAssistantMessage(msg.content) : msg.content}
                 </div>
               </div>
             ))}

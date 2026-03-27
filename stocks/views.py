@@ -1076,20 +1076,35 @@ class PortfolioGrowthAPIView(APIView):
             # Mock holdings for built-in (10 shares of each)
             holdings = [{'symbol': s[0], 'qty': 10, 'buy_price': 0} for s in symbol_tuples]
         else:
+            try:
+                portfolio_obj = Portfolio.objects.get(id=portfolio_id)
+            except Portfolio.DoesNotExist:
+                return Response([])
+
             # Get all stocks in the portfolio from DB
             stocks = PortfolioStock.objects.filter(portfolio_id=portfolio_id).select_related('stock')
-            if not stocks:
-                return Response([])
 
             holdings = []
             symbols = []
-            for s in stocks:
-                sym = s.stock.symbol
-                qty = float(s.quantity)
-                buy_price = float(s.buy_price)
-                holdings.append({'symbol': sym, 'qty': qty, 'buy_price': buy_price})
-                if sym not in symbols:
-                    symbols.append(sym)
+
+            if stocks.exists():
+                for s in stocks:
+                    sym = s.stock.symbol
+                    qty = float(s.quantity)
+                    buy_price = float(s.buy_price)
+                    holdings.append({'symbol': sym, 'qty': qty, 'buy_price': buy_price})
+                    if sym not in symbols:
+                        symbols.append(sym)
+            else:
+                # Sector portfolios can exist without PortfolioStock rows. Build synthetic holdings
+                # from the canonical Stock table using the portfolio name as the sector source.
+                sector_name = portfolio_obj.name.replace(" Portfolio", "").strip()
+                sector_stocks = list(Stock.objects.filter(sector__iexact=sector_name).order_by("symbol"))
+                if not sector_stocks:
+                    return Response([])
+
+                holdings = [{'symbol': s.symbol, 'qty': 10.0, 'buy_price': 0.0} for s in sector_stocks]
+                symbols = [s.symbol for s in sector_stocks]
 
         try:
             # Safely fetch 1 month of historical close prices using chunked batching

@@ -1,12 +1,11 @@
 import Navbar from "../components/Navbar";
 import Chatbot from "../components/Chatbot";
+import AnimatedBackground from "../components/AnimatedBackground";
 
 export default function MainLayout({ children, refreshData, portfolios, activePortfolio, setActivePortfolio, fetchPortfolios }) {
   return (
     <div className="relative min-h-screen text-slate-100 overflow-hidden">
-      {/* Background ambient glow */}
-      <div className="fixed top-[-20%] right-[-10%] w-[50%] h-[50%] bg-blue-900/10 rounded-full blur-[120px] pointer-events-none" />
-      <div className="fixed bottom-[-20%] left-[-10%] w-[50%] h-[50%] bg-emerald-900/10 rounded-full blur-[120px] pointer-events-none" />
+      <AnimatedBackground />
 
       <div className="relative z-10 flex flex-col h-full">
         <Navbar
